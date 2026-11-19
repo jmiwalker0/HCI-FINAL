@@ -1,0 +1,14 @@
+{
+  "name": "untitled-folder-3",
+  "version": "1.0.0",
+  "description": "A browser-based prototype built from the supplied Figma design and aligned with the group's research scope.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dev": "concurrently \"npm run dev --prefix backend\" \"npx serve . -l 54815\""
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs"
+}

@@ -1,0 +1,284 @@
+
+/* =========================================================
+   LEDGER — DASHBOARD CHART STYLES
+   ========================================================= */
+
+
+/* ==============================
+   DASHBOARD CHART CARD
+   ============================== */
+
+.dashboard-chart-card {
+    min-width: 0;
+    width: 100%;
+}
+
+
+/* ==============================
+   CHART TOOLBAR
+   ============================== */
+
+.chart-toolbar {
+    display: flex;
+    justify-content: flex-end;
+    align-items: flex-end;
+    flex-wrap: wrap;
+    gap: 14px;
+    margin: 18px 0;
+}
+
+.chart-toolbar label {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+
+    color: #64748b;
+
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+}
+
+.chart-toolbar select {
+    min-width: 145px;
+
+    padding: 9px 12px;
+
+    border: 1px solid #e2e8f0;
+    border-radius: 7px;
+
+    background: #ffffff;
+    color: #334155;
+
+    font-family: inherit;
+    font-size: 12px;
+
+    cursor: pointer;
+    outline: none;
+
+    transition:
+        border-color 0.2s ease,
+        box-shadow 0.2s ease;
+}
+
+.chart-toolbar select:hover {
+    border-color: #94a3b8;
+}
+
+.chart-toolbar select:focus {
+    border-color: #16a34a;
+
+    box-shadow:
+        0 0 0 3px rgba(22, 163, 74, 0.10);
+}
+
+
+/* ==============================
+   CHART CONTAINER
+   ============================== */
+
+.chart-container {
+    position: relative;
+
+    width: 100%;
+    height: 310px;
+
+    margin-top: 12px;
+    min-width: 0;
+}
+
+.chart-container canvas {
+    display: block;
+
+    width: 100% !important;
+    height: 100% !important;
+}
+
+
+/* ==============================
+   CHART CAPTION
+   ============================== */
+
+.chart-caption {
+    margin-top: 14px;
+
+    text-align: center;
+
+    color: #64748b;
+
+    font-size: 11px;
+    line-height: 1.6;
+}
+
+
+/* ==============================
+   FINANCIAL SUMMARY
+   ============================== */
+
+.chart-summary {
+    display: grid;
+
+    grid-template-columns:
+        repeat(3, minmax(0, 1fr));
+
+    gap: 12px;
+
+    padding-top: 17px;
+    margin-top: 17px;
+
+    border-top: 1px solid #e2e8f0;
+}
+
+.chart-summary-item {
+    display: flex;
+    flex-direction: column;
+
+    gap: 7px;
+
+    min-width: 0;
+}
+
+.chart-summary-item span {
+    color: #64748b;
+
+    font-size: 11px;
+    font-weight: 500;
+}
+
+.chart-summary-item strong {
+    color: #334155;
+
+    font-size: 13px;
+    font-weight: 700;
+
+    overflow-wrap: anywhere;
+}
+
+
+/* ==============================
+   FINANCIAL COLORS
+   ============================== */
+
+.chart-summary-item strong.positive {
+    color: #16a34a;
+}
+
+.chart-summary-item strong.negative {
+    color: #dc2626;
+}
+
+
+/* ==============================
+   CHART ERROR MESSAGE
+   ============================== */
+
+.chart-fallback {
+    margin-top: 12px;
+
+    padding: 12px;
+
+    border-radius: 7px;
+
+    background: #fef2f2;
+
+    color: #dc2626;
+
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+
+/* ==============================
+   CHART LOADING / EMPTY STATE
+   ============================== */
+
+.chart-empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    min-height: 200px;
+
+    color: #94a3b8;
+
+    font-size: 13px;
+    text-align: center;
+}
+
+
+/* ==============================
+   RESPONSIVE DESIGN
+   ============================== */
+
+@media (max-width: 1024px) {
+
+    .chart-container {
+        height: 280px;
+    }
+
+}
+
+
+@media (max-width: 768px) {
+
+    .dashboard-chart-card {
+        width: 100%;
+    }
+
+    .chart-toolbar {
+        justify-content: flex-start;
+        align-items: stretch;
+    }
+
+    .chart-toolbar label {
+        flex: 1;
+        min-width: 120px;
+    }
+
+    .chart-toolbar select {
+        width: 100%;
+        min-width: 0;
+    }
+
+    .chart-container {
+        height: 260px;
+    }
+
+    .chart-summary {
+        gap: 8px;
+    }
+
+    .chart-summary-item strong {
+        font-size: 11px;
+    }
+
+}
+
+
+@media (max-width: 480px) {
+
+    .chart-toolbar {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .chart-toolbar label {
+        width: 100%;
+    }
+
+    .chart-container {
+        height: 230px;
+    }
+
+    .chart-summary {
+        grid-template-columns: 1fr;
+        gap: 12px;
+    }
+
+    .chart-summary-item {
+        flex-direction: row;
+        justify-content: space-between;
+        align-items: center;
+    }
+
+}
