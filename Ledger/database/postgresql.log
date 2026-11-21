@@ -198,3 +198,10 @@
 2026-11-21 10:33:59.939 PST [23337] LOG:  database system is ready to accept connections
 2026-11-21 10:38:59.938 PST [23341] LOG:  checkpoint starting: time
 2026-11-21 10:38:59.941 PST [23341] LOG:  checkpoint complete: wrote 0 buffers (0.0%), wrote 3 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=0.001 s, sync=0.001 s, total=0.004 s; sync files=2, longest=0.001 s, average=0.001 s; distance=0 kB, estimate=0 kB; lsn=0/2243050, redo lsn=0/2242FF8
+2026-11-21 16:09:50.400 PST [23337] LOG:  received fast shutdown request
+2026-11-21 16:09:50.400 PST [23337] LOG:  aborting any active transactions
+2026-11-21 16:09:50.403 PST [23337] LOG:  background worker "logical replication launcher" (PID 23346) exited with exit code 1
+2026-11-21 16:09:50.403 PST [23341] LOG:  shutting down
+2026-11-21 16:09:50.404 PST [23341] LOG:  checkpoint starting: shutdown immediate
+2026-11-21 16:09:50.406 PST [23341] LOG:  checkpoint complete: wrote 0 buffers (0.0%), wrote 0 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=0.001 s, sync=0.001 s, total=0.004 s; sync files=0, longest=0.000 s, average=0.000 s; distance=0 kB, estimate=0 kB; lsn=0/2243100, redo lsn=0/2243100
+2026-11-21 16:09:50.411 PST [23337] LOG:  database system is shut down
