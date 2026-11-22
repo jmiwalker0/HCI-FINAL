@@ -1,4 +1,3 @@
-
 // =========================================================
 // LEDGER — ACCOUNTING ASSISTANT
 // OBJECT-ORIENTED PROGRAMMING VERSION
@@ -55,8 +54,87 @@ class LedgerUtils {
         }[char]));
     }
 
+        // -----------------------------------------------------
+    // CHART OF ACCOUNTS (loaded from the server)
+    // -----------------------------------------------------
+
+    static chart = [];
+
+    static ACCOUNT_TYPE_LABELS = {
+        asset: "Assets",
+        liability: "Liabilities",
+        equity: "Equity",
+        revenue: "Revenue",
+        expense: "Expenses"
+    };
+
+    static findAccount(name) {
+
+        const key = String(name || "").trim().toLowerCase();
+
+        if (!key) return null;
+
+        return LedgerUtils.chart.find(
+            account =>
+                account.account_name.toLowerCase() === key
+        ) || null;
+    }
+
+    static accountSelectOptions(selected) {
+
+        const current = String(selected || "").trim();
+
+        const known = LedgerUtils.findAccount(current);
+
+        const groups = LedgerUtils.ACCOUNT_TYPES.map(type => {
+
+            const options = LedgerUtils.chart
+                .filter(account =>
+                    account.account_type === type &&
+                    (
+                        account.is_active ||
+                        (known && account.account_id === known.account_id)
+                    )
+                )
+                .map(account => `
+                    <option
+                        value="${LedgerUtils.escape(account.account_name)}"
+                        ${known && account.account_id === known.account_id ? "selected" : ""}
+                    >
+                        ${LedgerUtils.escape(account.code)}
+                        ${LedgerUtils.escape(account.account_name)}
+                    </option>
+                `).join("");
+
+            return options
+                ? `<optgroup label="${LedgerUtils.ACCOUNT_TYPE_LABELS[type]}">${options}</optgroup>`
+                : "";
+
+        }).join("");
+
+        const blank = current
+            ? ""
+            : `<option value="" selected disabled>Select account</option>`;
+
+        const missing = current && !known
+            ? `<option value="${LedgerUtils.escape(current)}" selected>${LedgerUtils.escape(current)} (not in chart)</option>`
+            : "";
+
+        return blank + missing + groups;
+    }
+
     static accountTypeFor(accountName) {
+
+        // The chart of accounts is the source of truth.
+        const account = LedgerUtils.findAccount(accountName);
+
+        if (account) {
+            return account.account_type;
+        }
+
+        // Fallback for names not in the chart (or chart not loaded).
         const name = String(accountName || "").toLowerCase();
+
 
         if (
             name.includes("revenue") ||
@@ -186,9 +264,15 @@ class LedgerState {
 
         this.transactions = [];
         this.receipts = [];
-        this.journalEdits = {};
+                this.journalEdits = {};
+
+        // Chart of accounts
+        this.accounts = [];
+        this.editingAccountId = null;
+        this.showInactiveAccounts = false;
 
         this.currentPage = "dashboard";
+
         this.currentUser = null;
         this.authMode = "login";
 
@@ -251,7 +335,25 @@ class LedgerState {
         this.journalEdits = savedEdits;
     }
 
+        setAccounts(accounts) {
+
+        this.accounts = accounts.map(account => ({
+            ...account,
+
+            account_id: Number(account.account_id),
+
+            is_active: account.is_active !== false,
+
+            is_system: account.is_system === true,
+
+            line_count: Number(account.line_count) || 0
+        }));
+
+        LedgerUtils.chart = this.accounts;
+    }
+
     getTransaction(id) {
+
 
         return this.transactions.find(
             transaction =>
@@ -280,10 +382,16 @@ class LedgerState {
 
         this.transactions = [];
         this.receipts = [];
-        this.journalEdits = {};
+                this.journalEdits = {};
+
+        this.accounts = [];
+        this.editingAccountId = null;
+        this.showInactiveAccounts = false;
+        LedgerUtils.chart = [];
 
         this.currentUser = null;
         this.currentPage = "dashboard";
+
 
         this.dashboardPeriod = "monthly";
         this.dashboardChartType = "bar";
@@ -448,7 +556,49 @@ class LedgerAPI {
         );
     }
 
+        async loadAccounts() {
+
+        const data =
+            await this.request("/accounts?include_inactive=1");
+
+        const accounts = Array.isArray(data)
+            ? data
+            : data.accounts || [];
+
+        this.state.setAccounts(accounts);
+    }
+
+    async createAccount(account) {
+
+        return this.request("/accounts", {
+            method: "POST",
+            body: JSON.stringify(account)
+        });
+    }
+
+    async updateAccount(id, changes) {
+
+        return this.request(
+            `/accounts/${encodeURIComponent(id)}`,
+            {
+                method: "PUT",
+                body: JSON.stringify(changes)
+            }
+        );
+    }
+
+    async deleteAccount(id) {
+
+        return this.request(
+            `/accounts/${encodeURIComponent(id)}`,
+            {
+                method: "DELETE"
+            }
+        );
+    }
+
     async saveJournalEntry(id, lines, transaction) {
+
 
         return this.request(
             `/journal-entries/${encodeURIComponent(id)}`,
@@ -1065,10 +1215,30 @@ class LedgerAccounting {
 
         }
 
+                if (LedgerUtils.chart.length) {
+
+            const unknown = lines.find(
+                line => !LedgerUtils.findAccount(line.account)
+            );
+
+            if (unknown) {
+                return `"${unknown.account}" is not in your chart of accounts.`;
+            }
+
+            const inactive = lines.find(
+                line => !LedgerUtils.findAccount(line.account).is_active
+            );
+
+            if (inactive) {
+                return `"${inactive.account}" is inactive. Choose another account or reactivate it.`;
+            }
+        }
+
         const debit = lines.reduce(
             (sum, line) => sum + line.debit,
             0
         );
+
 
         const credit = lines.reduce(
             (sum, line) => sum + line.credit,
@@ -2781,14 +2951,7 @@ class LedgerView {
 
                             <span>
 
-                                <input
-                                    class="journal-account"
-                                    data-id="${id}"
-                                    data-line="${index}"
-                                    value="${LedgerUtils.escape(line.account)}"
-                                    placeholder="Account name"
-                                    aria-label="Account name"
-                                >
+                                ${this.journalAccountControl(id, index, line.account)}
 
 
                                 <select
@@ -2796,6 +2959,7 @@ class LedgerView {
                                     data-id="${id}"
                                     data-line="${index}"
                                     aria-label="Account type"
+                                    ${LedgerUtils.chart.length ? "disabled" : ""}
                                 >
 
                                     ${LedgerUtils.accountTypeOptions(
@@ -4145,9 +4309,314 @@ class LedgerView {
     }
 
 
+        // =====================================================
+    // CHART OF ACCOUNTS
+    // =====================================================
+
+    // Account picker used on journal lines.
+    // Falls back to free text if the chart could not be loaded.
+    journalAccountControl(id, index, account) {
+
+        if (!LedgerUtils.chart.length) {
+
+            return `
+                <input
+                    class="journal-account"
+                    data-id="${id}"
+                    data-line="${index}"
+                    value="${LedgerUtils.escape(account)}"
+                    placeholder="Account name"
+                    aria-label="Account name"
+                >
+            `;
+        }
+
+        return `
+            <select
+                class="journal-account"
+                data-id="${id}"
+                data-line="${index}"
+                aria-label="Account"
+            >
+                ${LedgerUtils.accountSelectOptions(account)}
+            </select>
+        `;
+    }
+
+    accountRow(account) {
+
+        const id = account.account_id;
+
+        const editing =
+            this.state.editingAccountId === id;
+
+        const locked =
+            account.is_system;
+
+        const unused =
+            !locked && account.line_count === 0;
+
+        const status = account.is_active
+            ? `<span class="badge approved">ACTIVE</span>`
+            : `<span class="badge pending">INACTIVE</span>`;
+
+        const normal =
+            account.normal_balance === "debit" ? "Debit" : "Credit";
+
+        if (editing) {
+
+            return `
+                <tr data-account-row="${id}">
+
+                    <td>
+                        <input
+                            class="coa-input coa-code-input"
+                            data-field="code"
+                            value="${LedgerUtils.escape(account.code)}"
+                            maxlength="10"
+                            inputmode="numeric"
+                            aria-label="Account code"
+                        >
+                    </td>
+
+                    <td><div class="coa-stack">
+                        <input
+                            class="coa-input"
+                            data-field="name"
+                            value="${LedgerUtils.escape(account.account_name)}"
+                            maxlength="150"
+                            aria-label="Account name"
+                            ${locked ? "disabled" : ""}
+                        >
+                        ${
+                            unused
+                                ? `
+                                    <select class="coa-input" data-field="type" aria-label="Account type">
+                                        ${LedgerUtils.accountTypeOptions(account.account_type)}
+                                    </select>
+                                `
+                                : ""
+                        }
+                    </div></td>
+
+                    <td>
+                        ${
+                            unused
+                                ? `
+                                    <select class="coa-input" data-field="normal" aria-label="Normal balance">
+                                        <option value="debit" ${account.normal_balance === "debit" ? "selected" : ""}>Debit</option>
+                                        <option value="credit" ${account.normal_balance === "credit" ? "selected" : ""}>Credit</option>
+                                    </select>
+                                `
+                                : normal
+                        }
+                    </td>
+
+                    <td>${account.line_count}</td>
+
+                    <td>${status}</td>
+
+                    <td class="coa-actions">
+                        <button class="btn primary small" data-save-account="${id}">SAVE</button>
+                        <button class="btn secondary small" data-cancel-account>CANCEL</button>
+                    </td>
+
+                </tr>
+            `;
+        }
+
+        return `
+            <tr data-account-row="${id}" class="${account.is_active ? "" : "coa-row-inactive"}">
+
+                <td><strong class="coa-code">${LedgerUtils.escape(account.code)}</strong></td>
+
+                <td>
+                    ${LedgerUtils.escape(account.account_name)}
+                    ${
+                        locked
+                            ? `<span class="coa-system-note">System</span>`
+                            : ""
+                    }
+                </td>
+
+                <td>${normal}</td>
+
+                <td>${account.line_count}</td>
+
+                <td>${status}</td>
+
+                <td class="coa-actions">
+
+                    <button class="btn ghost small" data-edit-account="${id}">EDIT</button>
+
+                    ${
+                        locked
+                            ? ""
+                            : `
+                                <button class="btn ghost small" data-toggle-account="${id}">
+                                    ${account.is_active ? "DEACTIVATE" : "REACTIVATE"}
+                                </button>
+                            `
+                    }
+
+                    ${
+                        unused
+                            ? `<button class="btn danger small" data-delete-account="${id}">DELETE</button>`
+                            : ""
+                    }
+
+                </td>
+
+            </tr>
+        `;
+    }
+
+    chartOfAccounts() {
+
+        const showInactive =
+            this.state.showInactiveAccounts;
+
+        const accounts = this.state.accounts.filter(
+            account => showInactive || account.is_active
+        );
+
+        if (!this.state.accounts.length) {
+
+            return `
+
+                ${this.heading(
+                    "Chart of Accounts",
+                    "The accounts your journal entries post to."
+                )}
+
+                <div class="card"><div class="empty-state">Your chart of accounts could not be loaded.
+                        Check that the <strong>/api/accounts</strong> route is
+                        mounted on the server and that the chart of accounts
+                        migration has been run, then reload the page.
+                    </div></div>
+            `;
+        }
+
+        const sections = LedgerUtils.ACCOUNT_TYPES.map(type => {
+
+            const rows = accounts.filter(
+                account => account.account_type === type
+            );
+
+            if (!rows.length) return "";
+
+            return `
+                <div class="card table-card">
+
+                    <div class="card-head">
+                        <h3>${LedgerUtils.ACCOUNT_TYPE_LABELS[type]}</h3>
+                        <span class="tiny muted">${rows.length} accounts</span>
+                    </div>
+
+                    <div class="table-wrap">
+                        <table class="coa-table">
+                            <thead>
+                                <tr>
+                                    <th>CODE</th>
+                                    <th>ACCOUNT</th>
+                                    <th>NORMAL BALANCE</th>
+                                    <th>POSTINGS</th>
+                                    <th>STATUS</th>
+                                    <th>ACTION</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${rows.map(account => this.accountRow(account)).join("")}
+                            </tbody>
+                        </table>
+                    </div>
+
+                </div>
+            `;
+
+        }).join("");
+
+        return `
+
+            ${this.heading(
+                "Chart of Accounts",
+                "Every journal line must use one of these accounts.",
+                `
+                    <label class="coa-toggle">
+                        <input
+                            type="checkbox"
+                            id="showInactiveAccounts"
+                            ${showInactive ? "checked" : ""}
+                        >
+                        Show inactive accounts
+                    </label>
+                `
+            )}
+
+            <div class="info-box coa-info">
+                Every journal line must use an account from this list. Accounts that already have
+                postings can't change type or be deleted, so deactivate them instead.
+            </div>
+
+            <div class="card coa-form-card">
+
+                <div class="card-head">
+                    <h3>Add an account</h3>
+                </div>
+
+                <form id="accountForm" class="coa-form">
+
+                    <label>
+                        ACCOUNT NAME
+                        <input
+                            name="account_name"
+                            maxlength="150"
+                            placeholder="e.g. Delivery Equipment"
+                            required
+                        >
+                    </label>
+
+                    <label>
+                        TYPE
+                        <select name="account_type">
+                            ${LedgerUtils.accountTypeOptions("expense")}
+                        </select>
+                    </label>
+
+                    <label>
+                        CODE
+                        <input
+                            name="code"
+                            maxlength="10"
+                            inputmode="numeric"
+                            placeholder="Automatic"
+                        >
+                    </label>
+
+                    <label>
+                        NORMAL BALANCE
+                        <select name="normal_balance">
+                            <option value="">Default for type</option>
+                            <option value="debit">Debit</option>
+                            <option value="credit">Credit</option>
+                        </select>
+                    </label>
+
+                    <button class="btn primary" type="submit">ADD ACCOUNT</button>
+
+                </form>
+
+            </div>
+
+            ${sections}
+        `;
+    }
+
+
     // =====================================================
     // PAGE REGISTRY
     // =====================================================
+
 
     getPages() {
 
@@ -4159,7 +4628,10 @@ class LedgerView {
 
             journal: () => this.journal(),
 
-            ledger: () => this.ledger(),
+                        ledger: () => this.ledger(),
+
+            chartOfAccounts: () => this.chartOfAccounts(),
+
 
             trialBalance: () => this.trialBalance(),
 
@@ -4202,7 +4674,10 @@ class LedgerApp {
 
             journal: "Journal Entries",
 
-            ledger: "General Ledger",
+                        ledger: "General Ledger",
+
+            chartOfAccounts: "Chart of Accounts",
+
 
             trialBalance: "Trial Balance",
 
@@ -4443,7 +4918,22 @@ class LedgerApp {
 
         try {
 
-            await this.api.loadTransactions();
+                        await this.api.loadTransactions();
+
+            // The chart must load before journal entries so account types resolve.
+            try {
+
+                await this.api.loadAccounts();
+
+            } catch (error) {
+
+                if (!this.api.getToken()) return;
+
+                LedgerUtils.toast(
+                    "Chart of accounts unavailable: " + error.message,
+                    "error"
+                );
+            }
 
             await this.api.loadJournalEntries();
 
@@ -5375,9 +5865,261 @@ ${errors.length > 10
     }
 
 
+        // =====================================================
+    // CHART OF ACCOUNTS
+    // =====================================================
+
+    rerenderKeepScroll() {
+
+        const y = window.scrollY;
+
+        this.render(this.state.currentPage);
+
+        window.scrollTo(0, y);
+    }
+
+    async runChartAction(action, successMessage, reloadJournal = false) {
+
+        try {
+
+            await action();
+
+            await this.api.loadAccounts();
+
+            if (reloadJournal) {
+                await this.api.loadJournalEntries();
+            }
+
+            this.state.editingAccountId = null;
+
+            this.rerenderKeepScroll();
+
+            if (successMessage) {
+                LedgerUtils.toast(successMessage);
+            }
+
+            return true;
+
+        } catch (error) {
+
+            LedgerUtils.toast(error.message, "error");
+
+            return false;
+        }
+    }
+
+    wireChartOfAccounts() {
+
+        // Journal pages: choosing an account sets its type from the chart.
+        document.querySelectorAll("select.journal-account")
+            .forEach(select => {
+
+                select.addEventListener("change", () => {
+
+                    const row = select.closest(".journal-row");
+
+                    const type = row?.querySelector(
+                        ".journal-account-type"
+                    );
+
+                    if (type) {
+                        type.value =
+                            LedgerUtils.accountTypeFor(select.value);
+                    }
+                });
+            });
+
+
+        // Chart of accounts page
+        document.getElementById("showInactiveAccounts")
+            ?.addEventListener("change", event => {
+
+                this.state.showInactiveAccounts =
+                    event.target.checked;
+
+                this.rerenderKeepScroll();
+            });
+
+
+        document.getElementById("accountForm")
+            ?.addEventListener("submit", async event => {
+
+                event.preventDefault();
+
+                const form = event.target;
+
+                const data = Object.fromEntries(
+                    new FormData(form)
+                );
+
+                const payload = {
+                    account_name: String(data.account_name || "").trim(),
+                    account_type: data.account_type
+                };
+
+                if (String(data.code || "").trim()) {
+                    payload.code = String(data.code).trim();
+                }
+
+                if (data.normal_balance) {
+                    payload.normal_balance = data.normal_balance;
+                }
+
+                await this.runChartAction(
+                    () => this.api.createAccount(payload),
+                    "Account added."
+                );
+            });
+
+
+        document.querySelectorAll("[data-edit-account]")
+            .forEach(button => {
+
+                button.addEventListener("click", () => {
+
+                    this.state.editingAccountId =
+                        Number(button.dataset.editAccount);
+
+                    this.rerenderKeepScroll();
+                });
+            });
+
+
+        document.querySelectorAll("[data-cancel-account]")
+            .forEach(button => {
+
+                button.addEventListener("click", () => {
+
+                    this.state.editingAccountId = null;
+
+                    this.rerenderKeepScroll();
+                });
+            });
+
+
+        document.querySelectorAll("[data-save-account]")
+            .forEach(button => {
+
+                button.addEventListener("click", async () => {
+
+                    const id = Number(button.dataset.saveAccount);
+
+                    const account = this.state.accounts.find(
+                        item => item.account_id === id
+                    );
+
+                    const row = button.closest("tr");
+
+                    const read = field =>
+                        row.querySelector(`[data-field="${field}"]`)?.value;
+
+                    const changes = {};
+
+                    const code = read("code")?.trim();
+                    const name = read("name")?.trim();
+                    const type = read("type");
+                    const normal = read("normal");
+
+                    if (code !== undefined && code !== account.code) {
+                        changes.code = code;
+                    }
+
+                    if (name && name !== account.account_name) {
+                        changes.account_name = name;
+                    }
+
+                    if (type && type !== account.account_type) {
+                        changes.account_type = type;
+                    }
+
+                    if (normal && normal !== account.normal_balance) {
+                        changes.normal_balance = normal;
+                    }
+
+                    // New type without an explicit balance side: use the default.
+                    if (changes.account_type && !changes.normal_balance) {
+
+                        const defaultSide =
+                            ["asset", "expense"].includes(changes.account_type)
+                                ? "debit"
+                                : "credit";
+
+                        if (defaultSide !== account.normal_balance) {
+                            changes.normal_balance = defaultSide;
+                        }
+                    }
+
+                    if (!Object.keys(changes).length) {
+
+                        this.state.editingAccountId = null;
+
+                        this.rerenderKeepScroll();
+
+                        return;
+                    }
+
+                    await this.runChartAction(
+                        () => this.api.updateAccount(id, changes),
+                        "Account updated.",
+                        Boolean(changes.account_name)
+                    );
+                });
+            });
+
+
+        document.querySelectorAll("[data-toggle-account]")
+            .forEach(button => {
+
+                button.addEventListener("click", async () => {
+
+                    const id = Number(button.dataset.toggleAccount);
+
+                    const account = this.state.accounts.find(
+                        item => item.account_id === id
+                    );
+
+                    await this.runChartAction(
+                        () => this.api.updateAccount(id, {
+                            is_active: !account.is_active
+                        }),
+                        account.is_active
+                            ? "Account deactivated."
+                            : "Account reactivated."
+                    );
+                });
+            });
+
+
+        document.querySelectorAll("[data-delete-account]")
+            .forEach(button => {
+
+                button.addEventListener("click", async () => {
+
+                    const id = Number(button.dataset.deleteAccount);
+
+                    const account = this.state.accounts.find(
+                        item => item.account_id === id
+                    );
+
+                    if (!window.confirm(
+                        `Delete "${account.account_name}"? This cannot be undone.`
+                    )) {
+                        return;
+                    }
+
+                    await this.runChartAction(
+                        () => this.api.deleteAccount(id),
+                        "Account deleted."
+                    );
+                });
+            });
+    }
+
+
     // =====================================================
     // RECEIPT MANAGEMENT
     // =====================================================
+
 
     async addReceiptFiles(files, shouldRender = true) {
 
@@ -5706,7 +6448,11 @@ ${errors.length > 10
     // PAGE EVENT LISTENERS
     // =====================================================
 
-    wirePage() {
+        wirePage() {
+
+
+        // Chart of accounts + journal account pickers
+        this.wireChartOfAccounts();
 
 
         // Dashboard reporting period

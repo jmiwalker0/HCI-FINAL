@@ -1,0 +1,188 @@
+/* =========================================================
+   LEDGER — CHART OF ACCOUNTS
+   Uses the variables and patterns from style.css
+   ========================================================= */
+
+
+/* ==============================
+   INFORMATION
+   ============================== */
+
+.coa-info {
+    margin-bottom: 17px;
+}
+
+
+/* ==============================
+   HEADER OPTION (SHOW INACTIVE)
+   ============================== */
+
+.coa-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: #475569;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.coa-toggle input {
+    width: 15px;
+    height: 15px;
+    margin: 0;
+    accent-color: var(--blue);
+    cursor: pointer;
+}
+
+
+/* ==============================
+   ADD ACCOUNT FORM
+   ============================== */
+
+.coa-form-card {
+    margin-bottom: 17px;
+}
+
+.coa-form {
+    display: grid;
+    grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr) minmax(0, .8fr) minmax(0, 1fr) auto;
+    gap: 15px;
+    align-items: end;
+}
+
+.coa-form label {
+    font-size: 11px;
+    color: #475569;
+    font-weight: 600;
+    display: grid;
+    gap: 7px;
+    min-width: 0;
+}
+
+.coa-form input,
+.coa-form select,
+.coa-input {
+    width: 100%;
+    min-width: 0;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 10px 11px;
+    background: #fff;
+    color: #334155;
+    font: 12px Inter;
+    outline: none;
+}
+
+.coa-form input:focus,
+.coa-form select:focus,
+.coa-input:focus {
+    border-color: #93c5fd;
+    box-shadow: 0 0 0 3px #dbeafe;
+}
+
+.coa-form .btn {
+    height: 40px;
+    white-space: nowrap;
+}
+
+
+/* ==============================
+   ACCOUNT TABLES
+   ============================== */
+
+.coa-table .coa-code {
+    color: var(--navy);
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+}
+
+.coa-table tbody tr:hover {
+    background: #f8fafc;
+}
+
+.coa-table td {
+    vertical-align: middle;
+}
+
+.coa-system-note {
+    margin-left: 8px;
+    color: #94a3b8;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: .4px;
+    text-transform: uppercase;
+}
+
+.coa-row-inactive td {
+    color: #94a3b8;
+}
+
+
+/* ==============================
+   INLINE EDITING
+   ============================== */
+
+.coa-input {
+    padding: 8px 10px;
+    font-size: 11px;
+}
+
+.coa-input:disabled {
+    background: #f8fafc;
+    color: #94a3b8;
+    cursor: not-allowed;
+}
+
+.coa-code-input {
+    max-width: 96px;
+    font-variant-numeric: tabular-nums;
+}
+
+.coa-stack {
+    display: grid;
+    gap: 7px;
+    min-width: 200px;
+}
+
+
+/* ==============================
+   ROW ACTIONS
+   ============================== */
+
+.coa-actions {
+    white-space: nowrap;
+}
+
+.coa-actions .btn + .btn {
+    margin-left: 4px;
+}
+
+
+/* ==============================
+   RESPONSIVE DESIGN
+   ============================== */
+
+@media (max-width: 1050px) {
+
+    .coa-form {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .coa-form .btn {
+        grid-column: 1 / -1;
+    }
+
+}
+
+@media (max-width: 700px) {
+
+    .coa-form {
+        grid-template-columns: 1fr;
+    }
+
+    .coa-table {
+        min-width: 620px;
+    }
+
+}

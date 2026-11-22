@@ -28,6 +28,9 @@ app.use("/api/transactions", transactionRoutes);
 const journalEntryRoutes = require("./routes/journalEntries");
 app.use("/api/journal-entries", journalEntryRoutes);
 
+// CHART OF ACCOUNTS
+const accountRoutes = require("./routes/accounts");
+app.use("/api/accounts", accountRoutes);
 
 /* =====================================
    POSTGRESQL CONNECTION TEST
