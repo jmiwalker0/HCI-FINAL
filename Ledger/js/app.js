@@ -27,6 +27,76 @@ class LedgerUtils {
         "expense"
     ];
 
+    // Transaction types and the categories each one offers.
+    // "inflow" decides the +/− sign and colour in the transaction table.
+    static TRANSACTION_TYPES = {
+        income: {
+            label: "Income",
+            inflow: true,
+            categories: [
+                "Sales Revenue",
+                "Service Revenue",
+                "Other Income"
+            ]
+        },
+        expense: {
+            label: "Expense",
+            inflow: false,
+            categories: [
+                "Office Supplies",
+                "Utilities",
+                "Transportation",
+                "Rent Expense",
+                "Salaries Expense",
+                "Cost of Goods Sold",
+                "Repairs and Maintenance",
+                "Other Expense"
+            ]
+        },
+        investment: {
+            label: "Owner's Investment",
+            inflow: true,
+            categories: ["Owner's Investment"]
+        },
+        withdrawal: {
+            label: "Owner's Withdrawal",
+            inflow: false,
+            categories: ["Owner's Withdrawal"]
+        }
+    };
+
+    static isInflow(type) {
+        return LedgerUtils.TRANSACTION_TYPES[type]?.inflow ??
+            type === "income";
+    }
+
+    static typeLabel(type) {
+        return LedgerUtils.TRANSACTION_TYPES[type]?.label || type;
+    }
+
+    static typeOptions(selected) {
+        return Object.entries(LedgerUtils.TRANSACTION_TYPES)
+            .map(([value, config]) => `
+                <option value="${value}" ${value === selected ? "selected" : ""}>
+                    ${config.label}
+                </option>
+            `).join("");
+    }
+
+    static categoryOptions(type, selected) {
+        const categories =
+            LedgerUtils.TRANSACTION_TYPES[type]?.categories || [];
+
+        return categories.map(category => `
+            <option
+                value="${LedgerUtils.escape(category)}"
+                ${category === selected ? "selected" : ""}
+            >
+                ${LedgerUtils.escape(category)}
+            </option>
+        `).join("");
+    }
+
     static peso(amount) {
         return new Intl.NumberFormat("en-PH", {
             style: "currency",
@@ -273,6 +343,9 @@ class LedgerState {
         this.showInactiveAccounts = false;
 
         this.currentPage = "dashboard";
+
+        // Journal entry to scroll to after opening the Journal page
+        this.focusJournalId = null;
 
         this.currentUser = null;
         this.authMode = "login";
@@ -676,20 +749,103 @@ class LedgerAccounting {
     // ACCOUNT CLASSIFICATION
     // -----------------------------------------------------
 
+    // Pick the first candidate that exists (and is active) in the chart
+    // of accounts, then try a name pattern, then fall back to a default.
+    static pickAccount(candidates, type, pattern, fallback) {
+
+        for (const name of candidates) {
+
+            const account = LedgerUtils.findAccount(name);
+
+            if (account && account.is_active) {
+                return account.account_name;
+            }
+        }
+
+        if (pattern) {
+
+            const match = LedgerUtils.chart.find(
+                account =>
+                    account.account_type === type &&
+                    account.is_active &&
+                    pattern.test(account.account_name)
+            );
+
+            if (match) return match.account_name;
+        }
+
+        return fallback;
+    }
+
     static accountFor(transaction) {
+
+        const cash = this.pickAccount(
+            ["Cash"], "asset", /cash/i, "Cash"
+        );
 
         if (transaction.type === "income") {
 
+            const preferred =
+                transaction.category === "Sales Revenue"
+                    ? "Sales Revenue"
+                    : transaction.category === "Other Income"
+                        ? "Other Income"
+                        : "Service Revenue";
+
             return {
-                debit: "Cash",
+                debit: cash,
                 debitType: "asset",
 
-                credit:
-                    transaction.category === "Sales Revenue"
-                        ? "Sales Revenue"
-                        : "Service Revenue",
+                credit: this.pickAccount(
+                    [preferred, "Service Revenue", "Sales Revenue"],
+                    "revenue",
+                    null,
+                    preferred
+                ),
 
                 creditType: "revenue"
+            };
+        }
+
+        // Owner puts money in: Dr Cash, Cr Owner's Capital
+        if (transaction.type === "investment") {
+
+            return {
+                debit: cash,
+                debitType: "asset",
+
+                credit: this.pickAccount(
+                    ["Owner's Capital", "Owner Capital", "Capital"],
+                    "equity",
+                    /capital|investment/i,
+                    "Owner's Capital"
+                ),
+
+                creditType: "equity"
+            };
+        }
+
+        // Owner takes money out: Dr Owner's Drawings, Cr Cash
+        if (transaction.type === "withdrawal") {
+
+            return {
+                debit: this.pickAccount(
+                    [
+                        "Owner's Drawings",
+                        "Owner's Drawing",
+                        "Drawings",
+                        "Owner's Withdrawals"
+                    ],
+                    "equity",
+                    /drawing|withdraw/i,
+                    "Owner's Drawings"
+                ),
+
+                debitType: "equity",
+
+                credit: cash,
+
+                creditType: "asset"
             };
         }
 
@@ -701,18 +857,31 @@ class LedgerAccounting {
 
             "Transportation": "Transportation Expense",
 
-            "Rent Expense": "Rent Expense"
+            "Rent Expense": "Rent Expense",
+
+            "Salaries Expense": "Salaries Expense",
+
+            "Cost of Goods Sold": "Cost of Goods Sold",
+
+            "Repairs and Maintenance": "Repairs and Maintenance Expense"
 
         };
 
+        const preferredExpense =
+            expenseAccounts[transaction.category] ||
+            "General Expense";
+
         return {
-            debit:
-                expenseAccounts[transaction.category] ||
-                "General Expense",
+            debit: this.pickAccount(
+                [preferredExpense, "General Expense"],
+                "expense",
+                null,
+                preferredExpense
+            ),
 
             debitType: "expense",
 
-            credit: "Cash",
+            credit: cash,
 
             creditType: "asset"
         };
@@ -1504,9 +1673,11 @@ class LedgerCSVImporter {
                 errors.push("Missing category.");
             }
 
-            if (!["income", "expense"].includes(type)) {
+            if (!Object.keys(LedgerUtils.TRANSACTION_TYPES).includes(type)) {
                 errors.push(
-                    "Type must be income or expense."
+                    "Type must be one of: " +
+                    Object.keys(LedgerUtils.TRANSACTION_TYPES).join(", ") +
+                    "."
                 );
             }
 
@@ -1584,6 +1755,22 @@ class LedgerCSVImporter {
                 "Sales Revenue",
                 "income",
                 "5000.00"
+            ],
+
+            [
+                "2026-11-03",
+                "Owner capital contribution",
+                "Owner's Investment",
+                "investment",
+                "20000.00"
+            ],
+
+            [
+                "2026-11-04",
+                "Owner cash withdrawal",
+                "Owner's Withdrawal",
+                "withdrawal",
+                "3000.00"
             ]
 
         ];
@@ -2218,12 +2405,12 @@ class LedgerView {
                 </td>
 
                 <td class="amount ${
-                    transaction.type === "income"
+                    LedgerUtils.isInflow(transaction.type)
                         ? "positive"
                         : "negative"
                 }">
 
-                    ${transaction.type === "income" ? "+" : "−"}
+                    ${LedgerUtils.isInflow(transaction.type) ? "+" : "−"}
 
                     ${LedgerUtils.peso(transaction.amount)}
 
@@ -2239,6 +2426,13 @@ class LedgerView {
                         data-review="${LedgerUtils.escape(transaction.id)}"
                     >
                         View
+                    </button>
+
+                    <button
+                        class="btn danger small"
+                        data-delete-transaction="${LedgerUtils.escape(transaction.id)}"
+                    >
+                        Delete
                     </button>
                 </td>
 
@@ -2736,6 +2930,14 @@ class LedgerView {
                         Expense
                     </option>
 
+                    <option value="investment">
+                        Owner's Investment
+                    </option>
+
+                    <option value="withdrawal">
+                        Owner's Withdrawal
+                    </option>
+
                 </select>
 
             </div>
@@ -2843,7 +3045,7 @@ class LedgerView {
 
         return `
 
-            <div class="card journal-card">
+            <div class="card journal-card" id="journal-${id}">
 
 
                 <div class="card-head">
@@ -3076,12 +3278,23 @@ class LedgerView {
                     </span>
 
 
-                    <button
-                        class="btn primary small"
-                        data-save-journal="${id}"
-                    >
-                        SAVE EDITS
-                    </button>
+                    <div>
+
+                        <button
+                            class="btn danger small"
+                            data-delete-transaction="${id}"
+                        >
+                            DELETE TRANSACTION
+                        </button>
+
+                        <button
+                            class="btn primary small"
+                            data-save-journal="${id}"
+                        >
+                            SAVE EDITS
+                        </button>
+
+                    </div>
 
                 </div>
 
@@ -3168,10 +3381,16 @@ class LedgerView {
 
                         let balance = 0;
 
-                        const normalDebit = [
-                            "asset",
-                            "expense"
-                        ].includes(account.accountType);
+                        // Prefer the chart's normal balance (e.g. Owner's
+                        // Drawings is equity but normally debit).
+                        const chartAccount = LedgerUtils.findAccount(name);
+
+                        const normalDebit = chartAccount?.normal_balance
+                            ? chartAccount.normal_balance === "debit"
+                            : [
+                                "asset",
+                                "expense"
+                            ].includes(account.accountType);
 
                         const lines = [...account.lines].sort(
                             (a, b) =>
@@ -3748,7 +3967,16 @@ class LedgerView {
 
                         <div class="receipt-card">
 
-                            <div class="receipt-preview">
+                            <div
+                                class="receipt-preview"
+                                style="
+                                    height:180px;
+                                    overflow:hidden;
+                                    display:flex;
+                                    align-items:center;
+                                    justify-content:center
+                                "
+                            >
 
                                 ${
                                     receipt.type.startsWith("image/")
@@ -3758,8 +3986,9 @@ class LedgerView {
                                                 src="${receipt.data}"
                                                 alt=""
                                                 style="
-                                                    max-width:100%;
-                                                    max-height:100%;
+                                                    display:block;
+                                                    width:100%;
+                                                    height:100%;
                                                     object-fit:contain
                                                 "
                                             >
@@ -5037,12 +5266,72 @@ class LedgerApp {
 
 
         window.scrollTo(0, 0);
+
+
+        // Jump to a specific journal entry (set by the "View" button).
+        if (page === "journal" && this.state.focusJournalId) {
+
+            const target = document.getElementById(
+                `journal-${this.state.focusJournalId}`
+            );
+
+            this.state.focusJournalId = null;
+
+            if (target) {
+
+                target.scrollIntoView({
+                    behavior: "smooth",
+                    block: "start"
+                });
+
+                target.style.transition =
+                    "box-shadow 0.4s ease";
+
+                target.style.boxShadow =
+                    "0 0 0 3px #2563eb";
+
+                window.setTimeout(() => {
+                    target.style.boxShadow = "";
+                }, 2500);
+            }
+        }
     }
 
 
     // =====================================================
     // TRANSACTION MODAL
     // =====================================================
+
+    // Fill the Type select, then the Category select for that type.
+    populateTransactionTypes() {
+
+        const typeSelect = document.getElementById("txType");
+
+        if (!typeSelect) return;
+
+        const current = typeSelect.value;
+
+        typeSelect.innerHTML = LedgerUtils.typeOptions(
+            LedgerUtils.TRANSACTION_TYPES[current]
+                ? current
+                : "income"
+        );
+
+        this.populateTransactionCategories();
+    }
+
+    populateTransactionCategories() {
+
+        const typeSelect = document.getElementById("txType");
+
+        const categorySelect =
+            document.getElementById("txCategory");
+
+        if (!typeSelect || !categorySelect) return;
+
+        categorySelect.innerHTML =
+            LedgerUtils.categoryOptions(typeSelect.value);
+    }
 
     openModal() {
 
@@ -5051,6 +5340,8 @@ class LedgerApp {
 
         document.getElementById("txDate").value =
             LedgerUtils.today();
+
+        this.populateTransactionTypes();
 
         document.getElementById("txDescription").focus();
     }
@@ -6431,6 +6722,9 @@ ${errors.length > 10
 
                     if (transaction) {
 
+                        // Scroll straight to this transaction's entry.
+                        this.state.focusJournalId = transaction.id;
+
                         this.render("journal");
 
                         LedgerUtils.toast(
@@ -6442,6 +6736,59 @@ ${errors.length > 10
                 });
 
             });
+
+
+        document.querySelectorAll("[data-delete-transaction]")
+            .forEach(button => {
+
+                button.addEventListener("click", () => {
+
+                    this.deleteTransaction(
+                        button.dataset.deleteTransaction
+                    );
+
+                });
+
+            });
+    }
+
+
+    // -----------------------------------------------------
+    // DELETE TRANSACTION
+    // -----------------------------------------------------
+
+    async deleteTransaction(id) {
+
+        const transaction = this.state.getTransaction(id);
+
+        if (!transaction) return;
+
+        const confirmed = window.confirm(
+            `Delete this transaction?\n\n` +
+            `${transaction.date} · ${transaction.description} · ` +
+            `${LedgerUtils.peso(transaction.amount)}\n\n` +
+            `Its journal entry will be removed too. ` +
+            `This cannot be undone.`
+        );
+
+        if (!confirmed) return;
+
+        try {
+
+            await this.api.deleteTransaction(id);
+
+            await this.api.loadTransactions();
+
+            await this.api.loadJournalEntries();
+
+            this.rerenderKeepScroll();
+
+            LedgerUtils.toast("Transaction deleted.");
+
+        } catch (error) {
+
+            LedgerUtils.toast(error.message, "error");
+        }
     }
 
 
@@ -6736,6 +7083,15 @@ ${errors.length > 10
             .addEventListener("submit", event => {
 
                 this.addTransaction(event);
+
+            });
+
+
+        // Category choices follow the selected transaction type
+        document.getElementById("txType")
+            ?.addEventListener("change", () => {
+
+                this.populateTransactionCategories();
 
             });
 
