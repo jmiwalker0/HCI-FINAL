@@ -13,8 +13,9 @@
 class LedgerUtils {
 
     static API_BASE =
-        `http://${window.location.hostname}:3000/api`;
-
+    ["localhost", "127.0.0.1"].includes(window.location.hostname)
+        ? `http://${window.location.hostname}:3000/api`
+        : "https://hci-final-lgrl.onrender.com/";
     static TOKEN_KEY = "ledger-token";
     static USER_KEY = "ledger-user";
 
