@@ -1,4 +1,3 @@
-
 const express = require("express");
 const db = require("../db");
 const authenticate = require("../middleware/authMiddleware");
@@ -6,6 +5,10 @@ const authenticate = require("../middleware/authMiddleware");
 const router = express.Router();
 
 router.use(authenticate);
+
+// Must match the CHECK constraint on transactions.type
+// (see the ALTER TABLE in receipts-backend.md).
+const TRANSACTION_TYPES = ["income", "expense", "investment", "withdrawal"];
 
 // GET all transactions
 router.get("/", async (req, res) => {
@@ -37,7 +40,7 @@ router.post("/", async (req, res) => {
         const { date, description, category, type, amount } = req.body;
 
         if (!date || !description?.trim() || !category ||
-            !["income", "expense"].includes(type) ||
+            !TRANSACTION_TYPES.includes(type) ||
             !Number.isFinite(Number(amount)) || Number(amount) <= 0) {
             return res.status(400).json({
                 error: "Please provide valid transaction details."
@@ -74,7 +77,7 @@ router.patch("/:id", async (req, res) => {
         const { date, description, category, type, amount } = req.body;
 
         if (!date || !description?.trim() || !category ||
-            !["income", "expense"].includes(type) ||
+            !TRANSACTION_TYPES.includes(type) ||
             !Number.isFinite(Number(amount)) || Number(amount) <= 0) {
             return res.status(400).json({
                 error: "Please provide valid transaction details."
@@ -116,10 +119,32 @@ router.patch("/:id", async (req, res) => {
 });
 
 // DELETE transaction
+// journal_lines -> journal_entries -> transactions and receipts -> transactions
+// have no ON DELETE CASCADE, so the children are removed in the same
+// statement. A single SQL statement is atomic and its foreign keys are
+// checked at the end, so this is all-or-nothing.
+// Receipt files are kept; they are only unlinked from the transaction.
 router.delete("/:id", async (req, res) => {
     try {
         const result = await db.query(
-            `DELETE FROM transactions
+            `WITH entries AS (
+                 SELECT id FROM journal_entries
+                 WHERE transaction_id = $1 AND user_id = $2
+             ),
+             del_lines AS (
+                 DELETE FROM journal_lines
+                 WHERE journal_entry_id IN (SELECT id FROM entries)
+             ),
+             del_entries AS (
+                 DELETE FROM journal_entries
+                 WHERE id IN (SELECT id FROM entries)
+             ),
+             unlink_receipts AS (
+                 UPDATE receipts
+                 SET transaction_id = NULL
+                 WHERE transaction_id = $1 AND user_id = $2
+             )
+             DELETE FROM transactions
              WHERE id = $1 AND user_id = $2
              RETURNING id`,
             [req.params.id, req.user.userId]

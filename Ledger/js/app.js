@@ -590,6 +590,64 @@ class LedgerAPI {
         this.state.setTransactions(transactions);
     }
 
+    normalizeReceipt(receipt) {
+        return {
+            id: String(receipt.id),
+            name: receipt.file_name,
+            type: receipt.mime_type || "application/octet-stream",
+            date: String(receipt.uploaded_at || "").slice(0, 10),
+            data: receipt.url || "",
+            transactionId: receipt.transaction_id || null
+        };
+    }
+
+    async loadReceipts() {
+        const data = await this.request("/receipts");
+
+        this.state.receipts = (data.receipts || [])
+            .map(receipt => this.normalizeReceipt(receipt));
+    }
+
+    async saveReceipt(file, transactionId = null) {
+
+        const dataUrl = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = () => reject(
+                new Error("Unable to read receipt file.")
+            );
+
+            reader.readAsDataURL(file);
+        });
+
+        const result = await this.request("/receipts", {
+            method: "POST",
+
+            body: JSON.stringify({
+                file_name: file.name,
+                mime_type: file.type || "application/octet-stream",
+                data: dataUrl,
+                transaction_id: transactionId || null
+            })
+        });
+
+        if (!result.receipt) {
+            throw new Error("Server did not return the saved receipt.");
+        }
+
+        return this.normalizeReceipt(result.receipt);
+    }
+
+    async deleteReceipt(id) {
+        return this.request(
+            `/receipts/${encodeURIComponent(id)}`,
+            {
+                method: "DELETE"
+            }
+        );
+    }
+
     async loadJournalEntries() {
 
         const data = await this.request("/journal-entries");
@@ -5167,6 +5225,19 @@ class LedgerApp {
 
             await this.api.loadJournalEntries();
 
+            try {
+                await this.api.loadReceipts();
+
+            } catch (error) {
+
+                if (!this.api.getToken()) return;
+
+                LedgerUtils.toast(
+                    "Receipts could not be loaded: " + error.message,
+                    "error"
+                );
+            }
+
 
             document.getElementById("connectionStatus").textContent =
                 "Database connected";
@@ -5469,11 +5540,14 @@ class LedgerApp {
             }
 
 
+            let receiptUploadResult = null;
+
             if (file) {
 
-                await this.addReceiptFiles(
+                receiptUploadResult = await this.addReceiptFiles(
                     [file],
-                    false
+                    false,
+                    saved.id
                 );
             }
 
@@ -5488,9 +5562,26 @@ class LedgerApp {
             this.render("journal");
 
 
-            LedgerUtils.toast(
-                "Transaction saved to PostgreSQL."
-            );
+            if (file && receiptUploadResult?.failed) {
+
+                LedgerUtils.toast(
+                    "Transaction saved, but receipt upload failed: " +
+                    receiptUploadResult.error.message,
+                    "error"
+                );
+
+            } else if (file) {
+
+                LedgerUtils.toast(
+                    "Transaction and receipt saved to the database."
+                );
+
+            } else {
+
+                LedgerUtils.toast(
+                    "Transaction saved to PostgreSQL."
+                );
+            }
 
         } catch (error) {
 
@@ -6413,71 +6504,80 @@ ${errors.length > 10
     // =====================================================
 
 
-    async addReceiptFiles(files, shouldRender = true) {
+    async addReceiptFiles(
+        files,
+        shouldRender = true,
+        transactionId = null
+    ) {
 
-        for (const file of files) {
+        let uploaded = 0;
+        let failed = 0;
+        let lastError = null;
+
+        for (const file of Array.from(files || [])) {
 
             if (file.size > 4 * 1024 * 1024) {
 
-                LedgerUtils.toast(
-                    `${file.name} is over 4 MB. Choose a smaller file.`,
-                    "error"
+                failed++;
+
+                lastError = new Error(
+                    `${file.name} is over 4 MB.`
                 );
 
                 continue;
             }
 
-
             try {
 
-                const data = await new Promise(
-                    (resolve, reject) => {
-
-                        const reader = new FileReader();
-
-                        reader.onload = () => {
-                            resolve(reader.result);
-                        };
-
-                        reader.onerror = reject;
-
-                        reader.readAsDataURL(file);
-                    }
+                const receipt = await this.api.saveReceipt(
+                    file,
+                    transactionId
                 );
 
+                this.state.receipts.unshift(receipt);
 
-                this.state.receipts.push({
+                uploaded++;
 
-                    id: crypto.randomUUID(),
+            } catch (error) {
 
-                    name: file.name,
-
-                    type: file.type || "Document",
-
-                    date: LedgerUtils.today(),
-
-                    data
-
-                });
-
-            } catch {
-
-                LedgerUtils.toast(
-                    `Could not read ${file.name}.`,
-                    "error"
-                );
+                failed++;
+                lastError = error;
             }
         }
-
 
         if (shouldRender) {
 
             this.render("receipts");
 
-            LedgerUtils.toast(
-                "Receipt added temporarily to this browser."
-            );
+            if (uploaded > 0 && failed > 0) {
+
+                LedgerUtils.toast(
+                    `${uploaded} receipt(s) saved; ${failed} failed.`,
+                    "error"
+                );
+
+            } else if (uploaded > 0) {
+
+                LedgerUtils.toast(
+                    uploaded === 1
+                        ? "Receipt saved to the database."
+                        : `${uploaded} receipts saved to the database.`
+                );
+
+            } else if (failed > 0) {
+
+                LedgerUtils.toast(
+                    lastError?.message || "Unable to save receipts.",
+                    "error"
+                );
+            }
         }
+
+        return {
+            uploaded,
+            failed,
+            error: lastError
+        };
     }
 
 
@@ -6532,20 +6632,30 @@ ${errors.length > 10
     // DELETE RECEIPT
     // -----------------------------------------------------
 
-    deleteReceipt(id) {
+    async deleteReceipt(id) {
 
-        this.state.receipts =
-            this.state.receipts.filter(
-                receipt => String(receipt.id) !== String(id)
+        try {
+
+            await this.api.deleteReceipt(id);
+
+            this.state.receipts =
+                this.state.receipts.filter(
+                    receipt => String(receipt.id) !== String(id)
+                );
+
+            this.render("receipts");
+
+            LedgerUtils.toast(
+                "Receipt deleted from the database."
             );
 
+        } catch (error) {
 
-        this.render("receipts");
-
-
-        LedgerUtils.toast(
-            "Receipt removed from this browser."
-        );
+            LedgerUtils.toast(
+                error.message,
+                "error"
+            );
+        }
     }
 
 
@@ -7066,12 +7176,33 @@ ${errors.length > 10
         document.querySelectorAll(".nav-item[data-page]")
             .forEach(button => {
 
-                button.addEventListener("click", () => {
+                button.addEventListener("click", async () => {
 
-                    this.render(button.dataset.page);
+                    const page = button.dataset.page;
+
+                    this.render(page);
 
                     document.getElementById("sidebar")
                         .classList.remove("open");
+
+                    if (page === "receipts") {
+
+                        try {
+
+                            await this.api.loadReceipts();
+
+                            if (this.state.currentPage === "receipts") {
+                                this.render("receipts");
+                            }
+
+                        } catch (error) {
+
+                            LedgerUtils.toast(
+                                error.message,
+                                "error"
+                            );
+                        }
+                    }
 
                 });
 
