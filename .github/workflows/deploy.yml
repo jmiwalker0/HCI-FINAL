@@ -24,25 +24,22 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: Ledger/package-lock.json
+      - name: Prepare website
+        run: |
+          mkdir -p public
+          cp -r Ledger/. public/
 
-      - name: Install frontend dependencies
-        working-directory: Ledger
-        run: npm ci
+          rm -rf public/backend
+          rm -rf public/node_modules
+          rm -f public/package.json
+          rm -f public/package-lock.json
 
-      - name: Build frontend
-        working-directory: Ledger
-        run: npm run build
+          touch public/.nojekyll
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: Ledger/dist
+          path: public
 
   deploy:
     runs-on: ubuntu-latest
