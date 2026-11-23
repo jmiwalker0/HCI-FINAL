@@ -60,6 +60,16 @@ app.use("/api/inventory", inventoryRoutes);
 const adjustingEntryRoutes = require("./routes/adjustingEntries");
 app.use("/api/adjusting-entries", adjustingEntryRoutes);
 
+// REPORTING PERIODS
+const reportingRoutes = require("./routes/reporting");
+app.use("/api/reporting", reportingRoutes);
+
+// Phase 2: Fixed Assets and Supplies registers
+app.use('/api/fixed-assets', require('./routes/fixedAssets'));
+app.use('/api/supplies', require('./routes/supplies'));
+
+
+
 /* =====================================
    POSTGRESQL CONNECTION TEST
    ===================================== */

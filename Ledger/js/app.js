@@ -430,6 +430,14 @@ class LedgerState {
         this.receipts = [];
         this.inventory = [];
         this.inventoryMovements = [];
+
+        // Fixed assets + supplies registers
+        this.fixedAssets = [];
+        this.editingAssetId = null;
+        this.assetFormOpen = false;
+        this.supplies = [];
+        this.editingSupplyId = null;
+        this.supplyFormOpen = false;
         this.adjustments = [];
                 this.journalEdits = {};
 
@@ -439,6 +447,9 @@ class LedgerState {
         this.showInactiveAccounts = false;
 
         this.currentPage = "dashboard";
+
+        // Reporting periods (monthly / quarterly / yearly)
+        this.reporting = LedgerState.emptyReporting();
 
         // Journal entry to scroll to after opening the Journal page
         this.focusJournalId = null;
@@ -459,6 +470,65 @@ class LedgerState {
         // Financial Statements period (defaults to this year so far)
         this.statementStart = LedgerUtils.today().slice(0, 4) + "-01-01";
         this.statementEnd = LedgerUtils.today();
+    }
+
+    static emptyReporting() {
+        return {
+            frequency: "monthly",
+            fiscalStartMonth: 1,
+            fiscalStartLocked: false,
+            periods: [],
+            selectedStart: null
+        };
+    }
+
+    setReporting(data) {
+
+        const previousSelection = this.reporting.selectedStart;
+
+        const periods = (data.periods || []).map(period => ({
+            id: String(period.id),
+            frequency: period.frequency,
+            label: period.label,
+            start: String(period.start_date).slice(0, 10),
+            end: String(period.end_date).slice(0, 10),
+            fiscalYearStart: String(period.fiscal_year_start).slice(0, 10),
+            status: period.status,
+            reconciliation: period.reconciliation_status,
+            adjustedTb: period.adjusted_tb_status,
+            statements: period.statements_status,
+            closing: period.closing_status
+        }));
+
+        const keep = periods.some(p => p.start === previousSelection);
+
+        this.reporting = {
+            frequency: data.settings?.frequency || "monthly",
+            fiscalStartMonth:
+                Number(data.settings?.fiscal_start_month) || 1,
+            fiscalStartLocked:
+                data.settings?.fiscal_start_locked === true,
+            periods,
+            // Default to the current (latest) period.
+            selectedStart: keep
+                ? previousSelection
+                : periods.length
+                    ? periods[periods.length - 1].start
+                    : null
+        };
+    }
+
+    getReportingPeriod(start = this.reporting.selectedStart) {
+        return this.reporting.periods.find(p => p.start === start) || null;
+    }
+
+    getPreviousReportingPeriod(period) {
+
+        const list = this.reporting.periods;
+
+        const index = list.findIndex(p => p.start === period?.start);
+
+        return index > 0 ? list[index - 1] : null;
     }
 
     setTransactions(transactions) {
@@ -497,6 +567,55 @@ class LedgerState {
                 debit: Number(line.debit) || 0,
                 credit: Number(line.credit) || 0
             }))
+        }));
+    }
+
+    setFixedAssets(list) {
+
+        this.fixedAssets = (list || []).map(asset => ({
+            id: String(asset.id),
+            name: asset.name || "",
+            description: asset.description || "",
+            acquisitionDate:
+                String(asset.acquisition_date || "").slice(0, 10),
+            depreciationStartDate:
+                String(asset.depreciation_start_date || "").slice(0, 10),
+            cost: Number(asset.cost) || 0,
+            residualValue: Number(asset.residual_value) || 0,
+            usefulLifeMonths: Number(asset.useful_life_months) || 0,
+            method: asset.method || "straight_line",
+            decliningRate:
+                asset.declining_rate == null
+                    ? null
+                    : Number(asset.declining_rate),
+            openingAccumulated: Number(asset.opening_accumulated) || 0,
+            accumulatedDepreciation:
+                Number(asset.accumulated_depreciation) ||
+                Number(asset.opening_accumulated) || 0,
+            carryingAmount:
+                asset.carrying_amount == null
+                    ? (Number(asset.cost) || 0) -
+                      (Number(asset.opening_accumulated) || 0)
+                    : Number(asset.carrying_amount),
+            condition: asset.condition || "good",
+            status: asset.status || "active",
+            disposalDate:
+                String(asset.disposal_date || "").slice(0, 10)
+        }));
+    }
+
+    setSupplies(list) {
+
+        this.supplies = (list || []).map(item => ({
+            id: String(item.id),
+            name: item.name || "",
+            category: item.category || "General",
+            description: item.description || "",
+            unitsOnHand: Number(item.units_on_hand) || 0,
+            unitCost: Number(item.unit_cost) || 0,
+            minStockLevel: Number(item.min_stock_level) || 0,
+            lastCountDate:
+                String(item.last_count_date || "").slice(0, 10)
         }));
     }
 
@@ -600,6 +719,14 @@ class LedgerState {
         this.receipts = [];
         this.inventory = [];
         this.inventoryMovements = [];
+
+        // Fixed assets + supplies registers
+        this.fixedAssets = [];
+        this.editingAssetId = null;
+        this.assetFormOpen = false;
+        this.supplies = [];
+        this.editingSupplyId = null;
+        this.supplyFormOpen = false;
         this.adjustments = [];
                 this.journalEdits = {};
 
@@ -607,6 +734,8 @@ class LedgerState {
         this.editingAccountId = null;
         this.showInactiveAccounts = false;
         LedgerUtils.chart = [];
+
+        this.reporting = LedgerState.emptyReporting();
 
         this.currentUser = null;
         this.currentPage = "dashboard";
@@ -765,11 +894,114 @@ class LedgerAPI {
         );
     }
 
+    async loadReporting() {
+
+        const data = await this.request(
+            `/reporting?today=${encodeURIComponent(LedgerUtils.today())}`
+        );
+
+        this.state.setReporting(data);
+    }
+
+    async saveReportingSettings(settings) {
+
+        return this.request("/reporting/settings", {
+            method: "PUT",
+            body: JSON.stringify(settings)
+        });
+    }
+
     async loadInventory() {
 
         const data = await this.request("/inventory");
 
         this.state.setInventory(data || {});
+    }
+
+    // ---- Fixed assets ----
+
+    async loadFixedAssets() {
+
+        const data = await this.request("/fixed-assets");
+
+        this.state.setFixedAssets(
+            Array.isArray(data)
+                ? data
+                : (data.assets || data.items || [])
+        );
+    }
+
+    async createFixedAsset(asset) {
+
+        return this.request("/fixed-assets", {
+            method: "POST",
+            body: JSON.stringify(asset)
+        });
+    }
+
+    async updateFixedAsset(id, asset) {
+
+        return this.request(
+            `/fixed-assets/${encodeURIComponent(id)}`,
+            {
+                method: "PUT",
+                body: JSON.stringify(asset)
+            }
+        );
+    }
+
+    async deleteFixedAsset(id) {
+
+        return this.request(
+            `/fixed-assets/${encodeURIComponent(id)}`,
+            { method: "DELETE" }
+        );
+    }
+
+    // ---- Supplies ----
+
+    async loadSupplies() {
+
+        const data = await this.request("/supplies");
+
+        this.state.setSupplies(
+            Array.isArray(data)
+                ? data
+                : (data.supplies || data.items || [])
+        );
+    }
+
+    async createSupply(item) {
+
+        return this.request("/supplies", {
+            method: "POST",
+            body: JSON.stringify(item)
+        });
+    }
+
+    async updateSupply(id, item) {
+
+        return this.request(
+            `/supplies/${encodeURIComponent(id)}`,
+            {
+                method: "PUT",
+                body: JSON.stringify(item)
+            }
+        );
+    }
+
+    async recordSupplyCount(id, unitsOnHand, countDate) {
+
+        return this.request(
+            `/supplies/${encodeURIComponent(id)}/count`,
+            {
+                method: "POST",
+                body: JSON.stringify({
+                    units_on_hand: unitsOnHand,
+                    last_count_date: countDate
+                })
+            }
+        );
     }
 
     normalizeReceipt(receipt) {
@@ -1535,6 +1767,45 @@ class LedgerAccounting {
         }
 
         return entries;
+    }
+
+    // Income, expenses and profit earned between two dates (inclusive).
+    // Uses the same posted entries and adjusting entries as the statements,
+    // and never changes any balance.
+    static periodSummary(state, startDate, endDate) {
+
+        let income = 0;
+        let expenses = 0;
+        let entries = 0;
+
+        this.ledgerEntries(state, true).forEach(entry => {
+
+            if (entry.date < startDate || entry.date > endDate) return;
+
+            entries++;
+
+            entry.lines.forEach(line => {
+
+                const type =
+                    line.accountType ||
+                    LedgerUtils.accountTypeFor(line.account);
+
+                const debit = Number(line.debit) || 0;
+                const credit = Number(line.credit) || 0;
+
+                if (type === "revenue") income += credit - debit;
+                if (type === "expense") expenses += debit - credit;
+            });
+        });
+
+        const round = value => Math.round(value * 100) / 100;
+
+        return {
+            income: round(income),
+            expenses: round(expenses),
+            profit: round(income - expenses),
+            entries
+        };
     }
 
     static financialStatements(state, startDate, endDate) {
@@ -5461,6 +5732,369 @@ class LedgerView {
 
 
     // =====================================================
+    // REPORTING PERIODS
+    // =====================================================
+
+    reportingStatusBadge(value) {
+
+        const text = {
+            not_started: "Not started",
+            in_progress: "In progress",
+            complete: "Complete"
+        }[value] || "Not started";
+
+        const style = value === "complete"
+            ? "badge approved"
+            : value === "in_progress"
+                ? "badge review"
+                : "badge";
+
+        return `<span class="${style}">${text}</span>`;
+    }
+
+    reportingChange(current, previous) {
+
+        const change = current - previous;
+
+        if (!change) return "No change";
+
+        const percent = previous
+            ? ` (${change > 0 ? "+" : ""}${(change / Math.abs(previous) * 100).toFixed(1)}%)`
+            : "";
+
+        return `${change > 0 ? "+" : "−"}${LedgerUtils.peso(Math.abs(change))}${percent}`;
+    }
+
+    reportingPeriods() {
+
+        const reporting = this.state.reporting;
+
+        const period = this.state.getReportingPeriod();
+
+        const previous = this.state.getPreviousReportingPeriod(period);
+
+        const monthNames = [
+            "January", "February", "March", "April", "May", "June",
+            "July", "August", "September", "October", "November",
+            "December"
+        ];
+
+        const frequencyName = {
+            monthly: "Monthly",
+            quarterly: "Quarterly",
+            yearly: "Yearly"
+        }[reporting.frequency];
+
+        const compareName = {
+            monthly: "previous month",
+            quarterly: "previous quarter",
+            yearly: "previous year"
+        }[reporting.frequency];
+
+        const today = LedgerUtils.today();
+
+        const current = period
+            ? LedgerAccounting.periodSummary(this.state, period.start, period.end)
+            : null;
+
+        const before = period && previous
+            ? LedgerAccounting.periodSummary(this.state, previous.start, previous.end)
+            : null;
+
+        const newestFirst = [...reporting.periods].reverse();
+
+        return `
+
+            ${this.heading(
+                "Reporting Periods",
+                "Choose how often you prepare financial reports. Changing this never changes your transactions or journal entries."
+            )}
+
+
+            <div class="card">
+
+                <div class="card-head">
+                    <h3>Reporting settings</h3>
+                </div>
+
+                <div class="form-grid" style="padding:0">
+
+                    <label>
+                        Reporting frequency
+
+                        <select id="reportingFrequency">
+                            ${["monthly", "quarterly", "yearly"].map(value => `
+                                <option
+                                    value="${value}"
+                                    ${value === reporting.frequency ? "selected" : ""}
+                                >
+                                    ${{ monthly: "Monthly", quarterly: "Quarterly", yearly: "Yearly" }[value]}
+                                </option>
+                            `).join("")}
+                        </select>
+                    </label>
+
+                    <label>
+                        Fiscal year starts in
+
+                        <select
+                            id="reportingFiscalStart"
+                            ${reporting.fiscalStartLocked ? "disabled" : ""}
+                        >
+                            ${monthNames.map((name, index) => `
+                                <option
+                                    value="${index + 1}"
+                                    ${index + 1 === reporting.fiscalStartMonth ? "selected" : ""}
+                                >
+                                    ${name}
+                                </option>
+                            `).join("")}
+                        </select>
+                    </label>
+
+                </div>
+
+                <p class="form-note">
+                    ${
+                        reporting.fiscalStartLocked
+                            ? "The fiscal year start is locked because period-end work has already started."
+                            : "Pick January for a calendar year, or another month if your business year starts later."
+                    }
+                    Your reporting frequency is separate from your fiscal
+                    year: monthly and quarterly reports never close your
+                    books. Only the year-end closing does that.
+                </p>
+
+                <div class="modal-actions" style="margin-top:12px">
+                    <button
+                        class="btn primary"
+                        id="saveReportingSettings"
+                        type="button"
+                    >
+                        Save settings
+                    </button>
+                </div>
+
+            </div>
+
+
+            <div class="card" style="margin-top:16px">
+
+                <div class="card-head">
+                    <h3>${frequencyName} reporting period</h3>
+                </div>
+
+                ${
+                    !period
+                        ? `<p class="muted tiny">No reporting periods yet.</p>`
+                        : `
+
+                <label>
+                    Reporting period
+
+                    <select id="reportingPeriodSelect">
+                        ${newestFirst.map(item => `
+                            <option
+                                value="${LedgerUtils.escape(item.start)}"
+                                ${item.start === period.start ? "selected" : ""}
+                            >
+                                ${LedgerUtils.escape(item.label)}
+                                (${LedgerUtils.escape(item.start)} to ${LedgerUtils.escape(item.end)})
+                            </option>
+                        `).join("")}
+                    </select>
+                </label>
+
+                <div class="breakdown-row" style="margin-top:12px">
+                    <span>Starts</span>
+                    <strong>${LedgerUtils.escape(period.start)}</strong>
+                </div>
+
+                <div class="breakdown-row">
+                    <span>Ends</span>
+                    <strong>
+                        ${LedgerUtils.escape(period.end)}
+                        ${period.end > today ? " (in progress)" : ""}
+                    </strong>
+                </div>
+
+                <div class="breakdown-row">
+                    <span>Period-end reconciliation</span>
+                    ${this.reportingStatusBadge(period.reconciliation)}
+                </div>
+
+                <div class="breakdown-row">
+                    <span>Adjusted trial balance</span>
+                    ${this.reportingStatusBadge(period.adjustedTb)}
+                </div>
+
+                <div class="breakdown-row">
+                    <span>Financial statements</span>
+                    ${this.reportingStatusBadge(period.statements)}
+                </div>
+
+                <div class="breakdown-row">
+                    <span>Year-end closing</span>
+                    ${
+                        reporting.frequency === "yearly"
+                            ? this.reportingStatusBadge(period.closing)
+                            : `<span class="tiny muted">Only at fiscal year-end</span>`
+                    }
+                </div>
+
+                <div class="modal-actions" style="margin-top:12px">
+                    <button
+                        class="btn secondary"
+                        id="useReportingPeriod"
+                        type="button"
+                    >
+                        View financial statements for this period
+                    </button>
+                </div>
+
+                `}
+
+            </div>
+
+
+            ${
+                period
+                    ? `
+
+            <div class="card" style="margin-top:16px">
+
+                <div class="card-head">
+                    <h3>
+                        ${LedgerUtils.escape(period.label)}
+                        ${previous ? `vs. ${compareName}` : ""}
+                    </h3>
+                    <span class="tiny muted">
+                        Posted transactions and adjusting entries
+                    </span>
+                </div>
+
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th></th>
+                                <th style="text-align:right">
+                                    ${LedgerUtils.escape(period.label)}
+                                </th>
+                                ${previous ? `
+                                <th style="text-align:right">
+                                    ${LedgerUtils.escape(previous.label)}
+                                </th>
+                                <th style="text-align:right">Change</th>
+                                ` : ""}
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${[
+                                ["Income", "income"],
+                                ["Expenses", "expenses"],
+                                ["Net profit", "profit"]
+                            ].map(([label, key]) => `
+                                <tr>
+                                    <td>${label}</td>
+                                    <td class="amount" style="text-align:right">
+                                        ${LedgerUtils.peso(current[key])}
+                                    </td>
+                                    ${previous ? `
+                                    <td class="amount" style="text-align:right">
+                                        ${LedgerUtils.peso(before[key])}
+                                    </td>
+                                    <td class="amount" style="text-align:right">
+                                        ${this.reportingChange(current[key], before[key])}
+                                    </td>
+                                    ` : ""}
+                                </tr>
+                            `).join("")}
+                        </tbody>
+                    </table>
+                </div>
+
+                ${
+                    previous
+                        ? ""
+                        : `<p class="tiny muted">
+                               This is your first period, so there is
+                               nothing to compare it with yet.
+                           </p>`
+                }
+
+                ${
+                    period.end > today
+                        ? `<p class="tiny muted">
+                               This period is still in progress, so its
+                               figures cover only the days so far.
+                           </p>`
+                        : ""
+                }
+
+            </div>
+
+
+            <div class="card" style="margin-top:16px">
+
+                <div class="card-head">
+                    <h3>All ${frequencyName.toLowerCase()} periods</h3>
+                </div>
+
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Period</th>
+                                <th>Dates</th>
+                                <th style="text-align:right">Net profit</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${newestFirst.map(item => {
+
+                                const summary = LedgerAccounting.periodSummary(
+                                    this.state, item.start, item.end
+                                );
+
+                                return `
+                                    <tr>
+                                        <td>${LedgerUtils.escape(item.label)}</td>
+                                        <td>
+                                            ${LedgerUtils.escape(item.start)}
+                                            to
+                                            ${LedgerUtils.escape(item.end)}
+                                        </td>
+                                        <td class="amount" style="text-align:right">
+                                            ${LedgerUtils.peso(summary.profit)}
+                                        </td>
+                                        <td>
+                                            <button
+                                                class="btn ghost small"
+                                                type="button"
+                                                data-select-period="${LedgerUtils.escape(item.start)}"
+                                            >
+                                                ${item.start === period.start ? "Selected" : "Select"}
+                                            </button>
+                                        </td>
+                                    </tr>`;
+                            }).join("")}
+                        </tbody>
+                    </table>
+                </div>
+
+            </div>
+
+                    `
+                    : ""
+            }
+
+        `;
+    }
+
+
+    // =====================================================
     // SETTINGS
     // =====================================================
 
@@ -6020,6 +6654,473 @@ class LedgerView {
     }
 
 
+    // =====================================================
+    // FIXED ASSETS REGISTER
+    // =====================================================
+
+    fixedAssets() {
+
+        const state = this.state;
+        const assets = state.fixedAssets;
+
+        const editing = state.editingAssetId
+            ? assets.find(a => a.id === state.editingAssetId)
+            : null;
+
+        const val = (field, fallback = "") =>
+            LedgerUtils.escape(
+                String(editing ? (editing[field] ?? fallback) : fallback)
+            );
+
+        const ratePct = editing && editing.decliningRate
+            ? String(+(editing.decliningRate * 100).toFixed(4))
+            : "";
+
+        const methodLabels = {
+            straight_line: "Straight-line",
+            declining_balance: "Declining balance"
+        };
+
+        const active = assets.filter(a => a.status !== "disposed");
+
+        const totalCost = active.reduce((sum, a) => sum + a.cost, 0);
+
+        const totalCarrying = active.reduce(
+            (sum, a) => sum + a.carryingAmount, 0
+        );
+
+        const rows = assets.length
+            ? assets.map(a => {
+
+                return `
+                    <tr>
+                        <td>
+                            <strong>${LedgerUtils.escape(a.name)}</strong>
+                            ${a.description
+                                ? `<div class="tiny muted">${LedgerUtils.escape(a.description)}</div>`
+                                : ""}
+                        </td>
+                        <td>${LedgerUtils.escape(a.acquisitionDate)}</td>
+                        <td>${LedgerUtils.peso(a.cost)}</td>
+                        <td>${LedgerUtils.escape(methodLabels[a.method] || a.method)}</td>
+                        <td>${LedgerUtils.peso(a.accumulatedDepreciation)}</td>
+                        <td>${LedgerUtils.peso(a.carryingAmount)}</td>
+                        <td>${
+                            a.status === "disposed"
+                                ? '<span class="badge review">DISPOSED</span>'
+                                : '<span class="badge approved">ACTIVE</span>'
+                        }</td>
+                        <td>
+                            <button
+                                type="button"
+                                class="btn"
+                                data-edit-asset="${LedgerUtils.escape(a.id)}"
+                            >Edit</button>
+                            ${a.status !== "disposed" ? `
+                                <button
+                                    type="button"
+                                    class="btn"
+                                    data-dispose-asset="${LedgerUtils.escape(a.id)}"
+                                >Dispose</button>` : ""}
+                        </td>
+                    </tr>
+                `;
+            }).join("")
+            : `
+                <tr>
+                    <td colspan="8">
+                        <div class="empty-state">
+                            No fixed assets yet. Use “Add fixed asset”
+                            to register your first one.
+                        </div>
+                    </td>
+                </tr>
+            `;
+
+        const selected = (field, value, fallback) =>
+            (editing ? editing[field] : fallback) === value
+                ? "selected"
+                : "";
+
+        const form = state.assetFormOpen ? `
+            <div class="card" style="margin-bottom:16px">
+                <h3 style="margin-top:0">
+                    ${editing ? "Edit fixed asset" : "Add fixed asset"}
+                </h3>
+
+                <form id="assetForm">
+                    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px">
+
+                        <label style="grid-column:1/-1">
+                            Asset name
+                            <input id="assetName" type="text" maxlength="150"
+                                   value="${val("name")}" required>
+                        </label>
+
+                        <label style="grid-column:1/-1">
+                            Description
+                            <input id="assetDescription" type="text"
+                                   value="${val("description")}">
+                        </label>
+
+                        <label>
+                            Acquisition date
+                            <input id="assetAcquired" type="date"
+                                   max="${LedgerUtils.today()}"
+                                   value="${val("acquisitionDate", LedgerUtils.today())}"
+                                   required>
+                        </label>
+
+                        <label>
+                            Depreciation start
+                            <input id="assetDepStart" type="date"
+                                   value="${val("depreciationStartDate")}">
+                        </label>
+
+                        <label>
+                            Cost (₱)
+                            <input id="assetCost" type="number" min="0.01"
+                                   step="0.01" value="${val("cost")}" required>
+                        </label>
+
+                        <label>
+                            Residual value (₱)
+                            <input id="assetResidual" type="number" min="0"
+                                   step="0.01" value="${val("residualValue", 0)}">
+                        </label>
+
+                        <label>
+                            Useful life (months)
+                            <input id="assetLife" type="number" min="1"
+                                   max="1200" step="1"
+                                   value="${val("usefulLifeMonths", 60)}" required>
+                        </label>
+
+                        <label>
+                            Depreciation method
+                            <select id="assetMethod">
+                                <option value="straight_line"
+                                    ${selected("method", "straight_line", "straight_line")}>
+                                    Straight-line</option>
+                                <option value="declining_balance"
+                                    ${selected("method", "declining_balance", "straight_line")}>
+                                    Declining balance</option>
+                            </select>
+                        </label>
+
+                        <label>
+                            Declining-balance rate (% per year)
+                            <input id="assetRate" type="number" min="0.01"
+                                   max="100" step="0.01"
+                                   value="${LedgerUtils.escape(ratePct)}"
+                                   placeholder="e.g. 40">
+                        </label>
+
+                        <label>
+                            Depreciation already recorded (₱)
+                            <input id="assetOpening" type="number" min="0"
+                                   step="0.01"
+                                   value="${val("openingAccumulated", 0)}">
+                        </label>
+
+                        <p class="form-note" style="grid-column:1/-1;margin:0">
+                            The rate is only used for Declining balance
+                            (double-declining = 200% ÷ useful life in years).
+                            Fill “already recorded” only for assets you owned
+                            before using Ledger.
+                        </p>
+
+                        <label>
+                            Condition
+                            <select id="assetCondition">
+                                ${["good", "fair", "poor", "damaged"].map(c => `
+                                    <option value="${c}"
+                                        ${selected("condition", c, "good")}>
+                                        ${c.charAt(0).toUpperCase() + c.slice(1)}
+                                    </option>`).join("")}
+                            </select>
+                        </label>
+
+                    </div>
+
+                    <p class="form-note">
+                        Use “Dispose” on the register to retire an asset.
+                    </p>
+
+                    <button type="submit" class="btn primary">
+                        ${editing ? "Save changes" : "Add asset"}
+                    </button>
+                    <button type="button" class="btn" id="cancelAsset">
+                        Cancel
+                    </button>
+                </form>
+            </div>
+        ` : "";
+
+        return `
+
+            ${this.heading(
+                "Fixed Assets",
+                "Register of equipment and other long-lived assets.",
+                `<button type="button" class="btn primary" id="addAsset">
+                    + Add fixed asset
+                </button>`
+            )}
+
+            <div class="grid metric-grid">
+
+                ${this.metric(
+                    "ACTIVE ASSETS",
+                    String(active.length),
+                    "Not yet disposed",
+                    "▣"
+                )}
+
+                ${this.metric(
+                    "TOTAL COST",
+                    LedgerUtils.peso(totalCost),
+                    "Active assets, at cost",
+                    "₱"
+                )}
+
+                ${this.metric(
+                    "CARRYING AMOUNT",
+                    LedgerUtils.peso(totalCarrying),
+                    "Cost less accumulated depreciation",
+                    "▣"
+                )}
+
+            </div>
+
+            <div style="margin-top:16px">${form}</div>
+
+            <div class="card table-card">
+
+                <div class="card-head">
+                    <h3>Asset register</h3>
+                    <span class="tiny muted">${assets.length} records</span>
+                </div>
+
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>ASSET</th>
+                                <th>ACQUIRED</th>
+                                <th>COST</th>
+                                <th>METHOD</th>
+                                <th>ACCUM. DEPR.</th>
+                                <th>CARRYING AMOUNT</th>
+                                <th>STATUS</th>
+                                <th>ACTIONS</th>
+                            </tr>
+                        </thead>
+                        <tbody>${rows}</tbody>
+                    </table>
+                </div>
+
+            </div>
+        `;
+    }
+
+
+    // =====================================================
+    // SUPPLIES REGISTER
+    // =====================================================
+
+    supplies() {
+
+        const state = this.state;
+        const items = state.supplies;
+
+        const editing = state.editingSupplyId
+            ? items.find(i => i.id === state.editingSupplyId)
+            : null;
+
+        const val = (field, fallback = "") =>
+            LedgerUtils.escape(
+                String(editing ? (editing[field] ?? fallback) : fallback)
+            );
+
+        const isLow = i =>
+            i.minStockLevel > 0 && i.unitsOnHand <= i.minStockLevel;
+
+        const totalValue = items.reduce(
+            (sum, i) => sum + i.unitsOnHand * i.unitCost, 0
+        );
+
+        const lowCount = items.filter(isLow).length;
+
+        const rows = items.length
+            ? items.map(i => `
+                <tr>
+                    <td>
+                        <strong>${LedgerUtils.escape(i.name)}</strong>
+                        ${i.description
+                            ? `<div class="tiny muted">${LedgerUtils.escape(i.description)}</div>`
+                            : ""}
+                    </td>
+                    <td>${LedgerUtils.escape(i.category)}</td>
+                    <td>
+                        ${i.unitsOnHand.toLocaleString()}
+                        ${isLow(i)
+                            ? '<span class="badge review">LOW STOCK</span>'
+                            : ""}
+                    </td>
+                    <td>${LedgerUtils.peso(i.unitCost)}</td>
+                    <td>${LedgerUtils.peso(i.unitsOnHand * i.unitCost)}</td>
+                    <td>${LedgerUtils.escape(i.lastCountDate) || "—"}</td>
+                    <td>
+                        <button type="button" class="btn"
+                            data-edit-supply="${LedgerUtils.escape(i.id)}"
+                        >Edit</button>
+                        <button type="button" class="btn"
+                            data-count-supply="${LedgerUtils.escape(i.id)}"
+                        >Count</button>
+                    </td>
+                </tr>
+            `).join("")
+            : `
+                <tr>
+                    <td colspan="7">
+                        <div class="empty-state">
+                            No supplies yet. Use “Add supplies item”
+                            to register your first one.
+                        </div>
+                    </td>
+                </tr>
+            `;
+
+        const form = state.supplyFormOpen ? `
+            <div class="card" style="margin-bottom:16px">
+                <h3 style="margin-top:0">
+                    ${editing ? "Edit supplies item" : "Add supplies item"}
+                </h3>
+
+                <form id="supplyForm">
+                    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px">
+
+                        <label style="grid-column:1/-1">
+                            Item name
+                            <input id="supplyName" type="text" maxlength="150"
+                                   value="${val("name")}" required>
+                        </label>
+
+                        <label>
+                            Category
+                            <input id="supplyCategory" type="text"
+                                   value="${val("category", "General")}">
+                        </label>
+
+                        <label>
+                            Description
+                            <input id="supplyDescription" type="text"
+                                   value="${val("description")}">
+                        </label>
+
+                        <label>
+                            Units on hand
+                            <input id="supplyUnits" type="number" min="0"
+                                   step="0.01" value="${val("unitsOnHand")}" required>
+                        </label>
+
+                        <label>
+                            Unit cost (₱)
+                            <input id="supplyCost" type="number" min="0"
+                                   step="0.01" value="${val("unitCost")}" required>
+                        </label>
+
+                        <label>
+                            Minimum stock level
+                            <input id="supplyMin" type="number" min="0"
+                                   step="0.01" value="${val("minStockLevel", 0)}">
+                        </label>
+
+                        <label>
+                            Last count date
+                            <input id="supplyCountDate" type="date"
+                                   max="${LedgerUtils.today()}"
+                                   value="${val("lastCountDate")}">
+                        </label>
+
+                    </div>
+
+                    <button type="submit" class="btn primary">
+                        ${editing ? "Save changes" : "Add item"}
+                    </button>
+                    <button type="button" class="btn" id="cancelSupply">
+                        Cancel
+                    </button>
+                </form>
+            </div>
+        ` : "";
+
+        return `
+
+            ${this.heading(
+                "Supplies",
+                "Consumable supplies on hand, with low-stock warnings.",
+                `<button type="button" class="btn primary" id="addSupply">
+                    + Add supplies item
+                </button>`
+            )}
+
+            <div class="grid metric-grid">
+
+                ${this.metric(
+                    "ITEMS",
+                    String(items.length),
+                    "Supplies tracked",
+                    "▤"
+                )}
+
+                ${this.metric(
+                    "SUPPLIES VALUE",
+                    LedgerUtils.peso(totalValue),
+                    "Units × unit cost",
+                    "₱"
+                )}
+
+                ${this.metric(
+                    "LOW STOCK",
+                    String(lowCount),
+                    "At or below minimum",
+                    "!"
+                )}
+
+            </div>
+
+            <div style="margin-top:16px">${form}</div>
+
+            <div class="card table-card">
+
+                <div class="card-head">
+                    <h3>Supplies register</h3>
+                    <span class="tiny muted">${items.length} records</span>
+                </div>
+
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>ITEM</th>
+                                <th>CATEGORY</th>
+                                <th>ON HAND</th>
+                                <th>UNIT COST</th>
+                                <th>TOTAL VALUE</th>
+                                <th>LAST COUNT</th>
+                                <th>ACTIONS</th>
+                            </tr>
+                        </thead>
+                        <tbody>${rows}</tbody>
+                    </table>
+                </div>
+
+            </div>
+        `;
+    }
+
+
     getPages() {
 
         return {
@@ -6046,6 +7147,12 @@ class LedgerView {
             receipts: () => this.receipts(),
 
             inventory: () => this.inventory(),
+
+            fixedAssets: () => this.fixedAssets(),
+
+            supplies: () => this.supplies(),
+
+            reportingPeriods: () => this.reportingPeriods(),
 
             settings: () => this.settings()
 
@@ -6096,6 +7203,12 @@ class LedgerApp {
             receipts: "Receipts",
 
             inventory: "Inventory",
+
+            fixedAssets: "Fixed Assets",
+
+            supplies: "Supplies",
+
+            reportingPeriods: "Reporting Periods",
 
             settings: "Settings"
 
@@ -6374,6 +7487,32 @@ class LedgerApp {
             }
 
             try {
+                await this.api.loadFixedAssets();
+
+            } catch (error) {
+
+                if (!this.api.getToken()) return;
+
+                LedgerUtils.toast(
+                    "Fixed assets could not be loaded: " + error.message,
+                    "error"
+                );
+            }
+
+            try {
+                await this.api.loadSupplies();
+
+            } catch (error) {
+
+                if (!this.api.getToken()) return;
+
+                LedgerUtils.toast(
+                    "Supplies could not be loaded: " + error.message,
+                    "error"
+                );
+            }
+
+            try {
                 await this.api.loadAdjustments();
 
             } catch (error) {
@@ -6382,6 +7521,20 @@ class LedgerApp {
 
                 LedgerUtils.toast(
                     "Adjusting entries could not be loaded: " + error.message,
+                    "error"
+                );
+            }
+
+
+            try {
+                await this.api.loadReporting();
+
+            } catch (error) {
+
+                if (!this.api.getToken()) return;
+
+                LedgerUtils.toast(
+                    "Reporting periods could not be loaded: " + error.message,
                     "error"
                 );
             }
@@ -7593,6 +8746,66 @@ ${errors.length > 10
     // FINANCIAL STATEMENTS PERIOD + EXPORT
     // -----------------------------------------------------
 
+    // -----------------------------------------------------
+    // REPORTING PERIODS
+    // -----------------------------------------------------
+
+    async saveReportingSettings() {
+
+        const frequency =
+            document.getElementById("reportingFrequency")?.value;
+
+        const month = Number(
+            document.getElementById("reportingFiscalStart")?.value ||
+            this.state.reporting.fiscalStartMonth
+        );
+
+        try {
+
+            await this.api.saveReportingSettings({
+                frequency,
+                fiscal_start_month: month
+            });
+
+            // Show the current period of the new frequency.
+            this.state.reporting.selectedStart = null;
+
+            await this.api.loadReporting();
+
+            this.render("reportingPeriods");
+
+            LedgerUtils.toast("Reporting settings saved.", "success");
+
+        } catch (error) {
+
+            LedgerUtils.toast(error.message, "error");
+        }
+    }
+
+    selectReportingPeriod(start) {
+
+        this.state.reporting.selectedStart = start;
+
+        this.render("reportingPeriods");
+    }
+
+    useReportingPeriodForStatements() {
+
+        const period = this.state.getReportingPeriod();
+
+        if (!period) return;
+
+        this.state.statementStart = period.start;
+
+        // Statements cannot run past today.
+        this.state.statementEnd =
+            period.end > LedgerUtils.today()
+                ? LedgerUtils.today()
+                : period.end;
+
+        this.render("financialStatements");
+    }
+
     updateStatementPeriod() {
 
         const start = document.getElementById("statementStart")?.value;
@@ -8657,14 +9870,372 @@ ${errors.length > 10
 
 
     // =====================================================
+    // FIXED ASSETS + SUPPLIES REGISTERS
+    // =====================================================
+
+    openAssetForm(id = null) {
+
+        this.state.editingAssetId = id;
+        this.state.assetFormOpen = true;
+
+        this.rerenderKeepScroll();
+
+        document.getElementById("assetName")?.focus();
+    }
+
+    closeAssetForm() {
+
+        this.state.editingAssetId = null;
+        this.state.assetFormOpen = false;
+
+        this.rerenderKeepScroll();
+    }
+
+    async saveAsset(event) {
+
+        event.preventDefault();
+
+        const button = event.currentTarget.querySelector(
+            '[type="submit"]'
+        );
+
+        const acquired =
+            document.getElementById("assetAcquired").value;
+
+        const payload = {
+            name: document.getElementById("assetName").value.trim(),
+            description:
+                document.getElementById("assetDescription").value.trim(),
+            acquisition_date: acquired,
+            depreciation_start_date:
+                document.getElementById("assetDepStart").value || acquired,
+            cost: parseFloat(document.getElementById("assetCost").value),
+            residual_value:
+                parseFloat(document.getElementById("assetResidual").value) || 0,
+            useful_life_months:
+                parseInt(document.getElementById("assetLife").value, 10),
+            method: document.getElementById("assetMethod").value,
+            condition: document.getElementById("assetCondition").value,
+            opening_accumulated:
+                parseFloat(document.getElementById("assetOpening").value) || 0,
+            declining_rate: null
+        };
+
+        if (payload.method === "declining_balance") {
+
+            const ratePercent =
+                parseFloat(document.getElementById("assetRate").value);
+
+            if (!(ratePercent > 0 && ratePercent <= 100)) {
+                LedgerUtils.toast(
+                    "Enter a declining-balance rate between 0 and 100%.",
+                    "error"
+                );
+                return;
+            }
+
+            payload.declining_rate = ratePercent / 100;
+        }
+
+        if (!payload.name || !acquired || !(payload.cost > 0)) {
+            LedgerUtils.toast("Please complete the required fields.", "error");
+            return;
+        }
+
+        if (payload.residual_value > payload.cost) {
+            LedgerUtils.toast(
+                "Residual value cannot be more than the cost.",
+                "error"
+            );
+            return;
+        }
+
+        if (
+            payload.opening_accumulated >
+            payload.cost - payload.residual_value
+        ) {
+            LedgerUtils.toast(
+                "Depreciation already recorded cannot exceed cost minus residual value.",
+                "error"
+            );
+            return;
+        }
+
+        const editingId = this.state.editingAssetId;
+
+        button.disabled = true;
+
+        try {
+
+            if (editingId) {
+                await this.api.updateFixedAsset(editingId, payload);
+            } else {
+                await this.api.createFixedAsset(payload);
+            }
+
+            await this.api.loadFixedAssets();
+
+            this.state.editingAssetId = null;
+            this.state.assetFormOpen = false;
+
+            this.rerenderKeepScroll();
+
+            LedgerUtils.toast(
+                editingId ? "Fixed asset updated." : "Fixed asset added."
+            );
+
+        } catch (error) {
+
+            button.disabled = false;
+
+            LedgerUtils.toast(error.message, "error");
+        }
+    }
+
+    async disposeAsset(id) {
+
+        const asset = this.state.fixedAssets.find(a => a.id === String(id));
+
+        if (!asset) return;
+
+        const confirmed = window.confirm(
+            `Dispose of "${asset.name}"?\n\n` +
+            `This retires the asset from the register. ` +
+            `It does not record any sale proceeds or gain/loss in your ` +
+            `journal. This cannot be undone.`
+        );
+
+        if (!confirmed) return;
+
+        try {
+
+            await this.api.deleteFixedAsset(id);
+
+            await this.api.loadFixedAssets();
+
+            this.rerenderKeepScroll();
+
+            LedgerUtils.toast("Asset disposed.");
+
+        } catch (error) {
+
+            LedgerUtils.toast(error.message, "error");
+        }
+    }
+
+    openSupplyForm(id = null) {
+
+        this.state.editingSupplyId = id;
+        this.state.supplyFormOpen = true;
+
+        this.rerenderKeepScroll();
+
+        document.getElementById("supplyName")?.focus();
+    }
+
+    closeSupplyForm() {
+
+        this.state.editingSupplyId = null;
+        this.state.supplyFormOpen = false;
+
+        this.rerenderKeepScroll();
+    }
+
+    async saveSupply(event) {
+
+        event.preventDefault();
+
+        const button = event.currentTarget.querySelector(
+            '[type="submit"]'
+        );
+
+        const payload = {
+            name: document.getElementById("supplyName").value.trim(),
+            category:
+                document.getElementById("supplyCategory").value.trim() ||
+                "General",
+            description:
+                document.getElementById("supplyDescription").value.trim(),
+            units_on_hand:
+                parseFloat(document.getElementById("supplyUnits").value),
+            unit_cost:
+                parseFloat(document.getElementById("supplyCost").value),
+            min_stock_level:
+                parseFloat(document.getElementById("supplyMin").value) || 0,
+            last_count_date:
+                document.getElementById("supplyCountDate").value || null
+        };
+
+        if (
+            !payload.name ||
+            !(payload.units_on_hand >= 0) ||
+            !(payload.unit_cost >= 0)
+        ) {
+            LedgerUtils.toast("Please complete the required fields.", "error");
+            return;
+        }
+
+        const editingId = this.state.editingSupplyId;
+
+        button.disabled = true;
+
+        try {
+
+            if (editingId) {
+                await this.api.updateSupply(editingId, payload);
+            } else {
+                await this.api.createSupply(payload);
+            }
+
+            await this.api.loadSupplies();
+
+            this.state.editingSupplyId = null;
+            this.state.supplyFormOpen = false;
+
+            this.rerenderKeepScroll();
+
+            LedgerUtils.toast(
+                editingId ? "Supplies item updated." : "Supplies item added."
+            );
+
+        } catch (error) {
+
+            button.disabled = false;
+
+            LedgerUtils.toast(error.message, "error");
+        }
+    }
+
+    async countSupply(id) {
+
+        const item = this.state.supplies.find(i => i.id === String(id));
+
+        if (!item) return;
+
+        const answer = window.prompt(
+            `Counted units on hand for "${item.name}":`,
+            String(item.unitsOnHand)
+        );
+
+        if (answer === null) return;
+
+        const quantity = Number(answer);
+
+        if (answer.trim() === "" || !Number.isFinite(quantity) || quantity < 0) {
+            LedgerUtils.toast("Enter a valid count (0 or more).", "error");
+            return;
+        }
+
+        try {
+
+            await this.api.recordSupplyCount(
+                id,
+                quantity,
+                LedgerUtils.today()
+            );
+
+            await this.api.loadSupplies();
+
+            this.rerenderKeepScroll();
+
+            LedgerUtils.toast("Stock count recorded.");
+
+        } catch (error) {
+
+            LedgerUtils.toast(error.message, "error");
+        }
+    }
+
+    wireRegisters() {
+
+        // Fixed assets
+        document.getElementById("addAsset")
+            ?.addEventListener("click", () => this.openAssetForm());
+
+        document.getElementById("cancelAsset")
+            ?.addEventListener("click", () => this.closeAssetForm());
+
+        document.getElementById("assetForm")
+            ?.addEventListener("submit", event => this.saveAsset(event));
+
+        document.querySelectorAll("[data-edit-asset]")
+            .forEach(button => {
+                button.addEventListener("click", () => {
+                    this.openAssetForm(button.dataset.editAsset);
+                });
+            });
+
+        document.querySelectorAll("[data-dispose-asset]")
+            .forEach(button => {
+                button.addEventListener("click", () => {
+                    this.disposeAsset(button.dataset.disposeAsset);
+                });
+            });
+
+        // Supplies
+        document.getElementById("addSupply")
+            ?.addEventListener("click", () => this.openSupplyForm());
+
+        document.getElementById("cancelSupply")
+            ?.addEventListener("click", () => this.closeSupplyForm());
+
+        document.getElementById("supplyForm")
+            ?.addEventListener("submit", event => this.saveSupply(event));
+
+        document.querySelectorAll("[data-edit-supply]")
+            .forEach(button => {
+                button.addEventListener("click", () => {
+                    this.openSupplyForm(button.dataset.editSupply);
+                });
+            });
+
+        document.querySelectorAll("[data-count-supply]")
+            .forEach(button => {
+                button.addEventListener("click", () => {
+                    this.countSupply(button.dataset.countSupply);
+                });
+            });
+    }
+
+
+    // =====================================================
     // PAGE EVENT LISTENERS
     // =====================================================
 
         wirePage() {
 
+        // Fixed assets + supplies registers
+        this.wireRegisters();
+
 
         // Chart of accounts + journal account pickers
         this.wireChartOfAccounts();
+
+
+        // Reporting periods page
+        document.getElementById("saveReportingSettings")
+            ?.addEventListener("click", () => {
+                this.saveReportingSettings();
+            });
+
+        document.getElementById("reportingPeriodSelect")
+            ?.addEventListener("change", event => {
+                this.selectReportingPeriod(event.target.value);
+            });
+
+        document.getElementById("useReportingPeriod")
+            ?.addEventListener("click", () => {
+                this.useReportingPeriodForStatements();
+            });
+
+        document.querySelectorAll("[data-select-period]")
+            .forEach(button => {
+                button.addEventListener("click", () => {
+                    this.selectReportingPeriod(
+                        button.dataset.selectPeriod
+                    );
+                });
+            });
 
 
         // Dashboard reporting period
