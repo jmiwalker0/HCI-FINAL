@@ -1,6 +1,7 @@
 const express = require("express");
 const db = require("../db");
 const authMiddleware = require("../middleware/authMiddleware");
+const { audit } = require("../lib/audit");
 
 const router = express.Router();
 
@@ -102,63 +103,9 @@ function buildPeriods(frequency, startMonth, earliest, today) {
     return all.filter(p => p.start_date <= today);
 }
 
-// Strict: rejects impossible dates such as 2026-02-31 (JS parses those
-// leniently, but Postgres would reject them with a 500).
-const validDate = value => {
-    const text = String(value || "");
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return false;
-    const ms = Date.parse(text);
-    return !Number.isNaN(ms) && isoDate(ms) === text;
-};
-
-// The client may send its own "today" so the right period shows across
-// time zones (e.g. Philippines is UTC+8). Anything more than a day away
-// from the server's date is ignored, so a bad value can never create
-// far-future period rows.
-function resolveToday(requested) {
-    const serverToday = isoDate(Date.now());
-    if (!validDate(requested)) return serverToday;
-    const diffDays = Math.abs(Date.parse(requested) - Date.parse(serverToday)) / 864e5;
-    return diffDays <= 1 ? requested : serverToday;
-}
-
-// Has any period-end work started? Checks the status columns AND the
-// work tables, so a missed status update can never allow a delete that
-// would fail on a foreign key or destroy real work.
-const WORK_TABLES = ["period_adjustments", "reconciliations"];
-
-async function periodWorkStarted(q, userId) {
-
-    const status = await q.query(
-        `SELECT 1 FROM accounting_periods
-         WHERE user_id = $1
-           AND (status <> 'open'
-             OR reconciliation_status <> 'not_started'
-             OR adjusted_tb_status <> 'not_started'
-             OR statements_status <> 'not_started'
-             OR closing_status <> 'not_started')
-         LIMIT 1`,
-        [userId]
-    );
-
-    if (status.rowCount > 0) return true;
-
-    for (const table of WORK_TABLES) {
-
-        // These tables arrive with a later migration; skip if absent.
-        const exists = await q.query("SELECT to_regclass($1) AS t", [`public.${table}`]);
-        if (!exists.rows[0].t) continue;
-
-        const rows = await q.query(
-            `SELECT 1 FROM public.${table} WHERE user_id = $1 LIMIT 1`,
-            [userId]
-        );
-
-        if (rows.rowCount > 0) return true;
-    }
-
-    return false;
-}
+const validDate = value =>
+    /^\d{4}-\d{2}-\d{2}$/.test(String(value || "")) &&
+    !Number.isNaN(Date.parse(value));
 
 /* =====================================
    LOAD SETTINGS + PERIODS
@@ -186,13 +133,9 @@ router.get("/", async (req, res) => {
 
         const settings = settingsResult.rows[0];
 
-        const today = resolveToday(req.query.today);
-
-        // Fix 1: any frequency's stored history can be viewed. Only the
-        // current frequency ever generates new period rows.
-        const viewFrequency = FREQUENCIES.includes(req.query.frequency)
-            ? req.query.frequency
-            : settings.frequency;
+        const today = validDate(req.query.today)
+            ? req.query.today
+            : new Date().toISOString().slice(0, 10);
 
         const earliestResult = await db.query(
             `SELECT LEAST(
@@ -222,7 +165,11 @@ router.get("/", async (req, res) => {
                  FROM jsonb_to_recordset($2::jsonb) AS p(
                     frequency text, label text, start_date text,
                     end_date text, fiscal_year_start text)
-                 ON CONFLICT (user_id, frequency, start_date) DO NOTHING`,
+                 WHERE NOT EXISTS (
+                    SELECT 1 FROM accounting_periods x
+                    WHERE x.user_id = $1
+                      AND x.frequency = p.frequency
+                      AND x.start_date = p.start_date::date)`,
                 [userId, JSON.stringify(periods)]
             );
         }
@@ -237,26 +184,27 @@ router.get("/", async (req, res) => {
              WHERE user_id = $1 AND frequency = $2
                AND start_date <= $3::date
              ORDER BY start_date`,
-            [userId, viewFrequency, today]
+            [userId, settings.frequency, today]
         );
 
-        const available = await db.query(
-            `SELECT DISTINCT frequency FROM accounting_periods
-             WHERE user_id = $1 AND start_date <= $2::date`,
-            [userId, today]
+        const locked = await db.query(
+            `SELECT 1 FROM accounting_periods
+             WHERE user_id = $1
+               AND (status <> 'open'
+                 OR reconciliation_status <> 'not_started'
+                 OR adjusted_tb_status <> 'not_started'
+                 OR statements_status <> 'not_started'
+                 OR closing_status <> 'not_started')
+             LIMIT 1`,
+            [userId]
         );
-
-        const locked = await periodWorkStarted(db, userId);
 
         res.json({
             settings: {
                 frequency: settings.frequency,
                 fiscal_start_month: settings.fiscal_start_month,
-                fiscal_start_locked: locked
+                fiscal_start_locked: locked.rowCount > 0
             },
-            viewing_frequency: viewFrequency,
-            available_frequencies: FREQUENCIES.filter(f =>
-                available.rows.some(r => r.frequency === f)),
             periods: stored.rows
         });
 
@@ -311,9 +259,19 @@ router.put("/settings", async (req, res) => {
 
         if (current.rows[0].fiscal_start_month !== month) {
 
-            const started = await periodWorkStarted(client, userId);
+            const started = await client.query(
+                `SELECT 1 FROM accounting_periods
+                 WHERE user_id = $1
+                   AND (status <> 'open'
+                     OR reconciliation_status <> 'not_started'
+                     OR adjusted_tb_status <> 'not_started'
+                     OR statements_status <> 'not_started'
+                     OR closing_status <> 'not_started')
+                 LIMIT 1`,
+                [userId]
+            );
 
-            if (started) {
+            if (started.rowCount > 0) {
                 await client.query("ROLLBACK");
                 return res.status(409).json({
                     error: "The fiscal year start cannot change after " +
@@ -335,6 +293,9 @@ router.put("/settings", async (req, res) => {
              WHERE user_id = $1`,
             [userId, frequency, month]
         );
+
+        await audit(client, userId, "reporting_settings_changed", "reporting_settings", null,
+            { frequency, fiscal_start_month: month });
 
         await client.query("COMMIT");
 

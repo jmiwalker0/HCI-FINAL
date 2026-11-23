@@ -438,6 +438,12 @@ class LedgerState {
         this.supplies = [];
         this.editingSupplyId = null;
         this.supplyFormOpen = false;
+
+        // Reconciliation wizard + adjustment review
+        this.proposals = [];
+        this.recon = LedgerState.emptyRecon();
+        this.editingProposalId = null;
+        this.reviewShowAll = false;
         this.adjustments = [];
                 this.journalEdits = {};
 
@@ -450,6 +456,11 @@ class LedgerState {
 
         // Reporting periods (monthly / quarterly / yearly)
         this.reporting = LedgerState.emptyReporting();
+        this.accountClasses = new Map();
+        this.savedReports = [];
+        this.closing = LedgerState.emptyClosing();
+        this.viewedReport = null;
+        this.auditEvents = null;
 
         // Journal entry to scroll to after opening the Journal page
         this.focusJournalId = null;
@@ -470,6 +481,49 @@ class LedgerState {
         // Financial Statements period (defaults to this year so far)
         this.statementStart = LedgerUtils.today().slice(0, 4) + "-01-01";
         this.statementEnd = LedgerUtils.today();
+    }
+
+    static emptyClosing() {
+        return {
+            years: [],
+            closings: [],
+            audit: [],
+            fy: null,
+            step: 1,
+            checks: null,
+            steps: {},
+            busy: false,
+            loaded: false
+        };
+    }
+
+    getClosingYear() {
+
+        const c = this.closing;
+
+        return c.years.find(y => y.start === c.fy) ||
+            c.years.find(y => y.end <= LedgerUtils.today()) ||
+            c.years[0] || null;
+    }
+
+    // The closing that currently counts for a fiscal year: a closed one,
+    // else one in progress, else none.
+    getYearClosing(fyStart) {
+
+        const rows = this.closing.closings.filter(
+            x => x.fiscalYearStart === fyStart
+        );
+
+        return rows.find(x => x.status === "complete") ||
+            rows.find(x => x.status === "in_progress") || null;
+    }
+
+    // Last day of the latest closed fiscal year ("" when none is closed).
+    closedThrough() {
+
+        return this.closing.closings
+            .filter(c => c.status === "complete")
+            .reduce((max, c) => c.fiscalYearEnd > max ? c.fiscalYearEnd : max, "");
     }
 
     static emptyReporting() {
@@ -568,6 +622,52 @@ class LedgerState {
                 credit: Number(line.credit) || 0
             }))
         }));
+    }
+
+    static emptyRecon() {
+        return {
+            periodId: null,
+            step: 1,
+            draft: {},
+            steps: {},
+            warnings: [],
+            loading: false
+        };
+    }
+
+    setProposals(rows) {
+
+        this.proposals = (rows || []).map(row => ({
+            id: String(row.id),
+            periodId: String(row.period_id),
+            periodLabel: row.period_label || "",
+            periodStart: String(row.period_start || "").slice(0, 10),
+            periodEnd: String(row.period_end || "").slice(0, 10),
+            periodStatus: row.period_status || "open",
+            source: row.source,
+            description: row.description || "",
+            reason: row.reason || "",
+            entryDate: String(row.entry_date || "").slice(0, 10),
+            lines: (Array.isArray(row.lines) ? row.lines : []).map(line => ({
+                account: line.account_name || "",
+                accountType: line.account_type || "",
+                debit: Number(line.debit) || 0,
+                credit: Number(line.credit) || 0
+            })),
+            meta: row.meta || {},
+            status: row.status,
+            decisionNote: row.decision_note || "",
+            decidedAt: row.decided_at ? String(row.decided_at).slice(0, 10) : ""
+        }));
+    }
+
+    getPeriodProposals(periodId) {
+        return this.proposals.filter(p => p.periodId === periodId);
+    }
+
+    static isWaiting(proposal) {
+        return proposal.status === "pending" ||
+               proposal.status === "revise_needed";
     }
 
     setFixedAssets(list) {
@@ -727,6 +827,12 @@ class LedgerState {
         this.supplies = [];
         this.editingSupplyId = null;
         this.supplyFormOpen = false;
+
+        // Reconciliation wizard + adjustment review
+        this.proposals = [];
+        this.recon = LedgerState.emptyRecon();
+        this.editingProposalId = null;
+        this.reviewShowAll = false;
         this.adjustments = [];
                 this.journalEdits = {};
 
@@ -736,6 +842,11 @@ class LedgerState {
         LedgerUtils.chart = [];
 
         this.reporting = LedgerState.emptyReporting();
+        this.accountClasses = new Map();
+        this.savedReports = [];
+        this.closing = LedgerState.emptyClosing();
+        this.viewedReport = null;
+        this.auditEvents = null;
 
         this.currentUser = null;
         this.currentPage = "dashboard";
@@ -894,6 +1005,106 @@ class LedgerAPI {
         );
     }
 
+    async loadAccountClasses() {
+
+        const data = await this.request("/statements/classes");
+
+        this.state.accountClasses = new Map(
+            (data.classes || []).map(c => [
+                String(c.account_name).trim().toLowerCase(), c.class
+            ])
+        );
+    }
+
+    async saveAccountClasses(classes) {
+
+        await this.request("/statements/classes", {
+            method: "PUT",
+            body: JSON.stringify({ classes })
+        });
+
+        await this.loadAccountClasses();
+    }
+
+    async loadSavedReports() {
+
+        const data = await this.request("/statements/reports");
+
+        this.state.savedReports = data.reports || [];
+    }
+
+    async saveReportSnapshot(body) {
+
+        return this.request("/statements/reports", {
+            method: "POST",
+            body: JSON.stringify(body)
+        });
+    }
+
+    async loadClosings() {
+
+        const data = await this.request("/closing");
+
+        const closing = this.state.closing;
+
+        closing.years = (data.years || []).map(y => ({
+            start: String(y.fiscal_year_start).slice(0, 10),
+            end: String(y.fiscal_year_end).slice(0, 10)
+        }));
+
+        closing.closings = (data.closings || []).map(c => ({
+            id: String(c.id),
+            fiscalYearStart: String(c.fiscal_year_start).slice(0, 10),
+            fiscalYearEnd: String(c.fiscal_year_end).slice(0, 10),
+            status: c.status,
+            steps: c.steps || {},
+            netIncome: c.net_income == null ? null : Number(c.net_income),
+            closedAt: c.closed_at,
+            reopenedAt: c.reopened_at,
+            reopenReason: c.reopen_reason || ""
+        }));
+
+        closing.audit = data.audit || [];
+        closing.loaded = true;
+    }
+
+    async loadAuditEvents() {
+
+        const data = await this.request("/closing/audit/events");
+
+        this.state.auditEvents = data.events || [];
+        this.state.auditLoadedAt = Date.now();
+    }
+
+    async loadClosingChecks(fy) {
+
+        return this.request(`/closing/${encodeURIComponent(fy)}/checks`);
+    }
+
+    async saveClosingSteps(fy, steps) {
+
+        return this.request(`/closing/${encodeURIComponent(fy)}/steps`, {
+            method: "PUT",
+            body: JSON.stringify({ steps })
+        });
+    }
+
+    async closeYear(fy, body) {
+
+        return this.request(`/closing/${encodeURIComponent(fy)}/close`, {
+            method: "POST",
+            body: JSON.stringify(body)
+        });
+    }
+
+    async reopenYear(id, body) {
+
+        return this.request(`/closing/${encodeURIComponent(id)}/reopen`, {
+            method: "POST",
+            body: JSON.stringify(body)
+        });
+    }
+
     async loadReporting() {
 
         const data = await this.request(
@@ -916,6 +1127,104 @@ class LedgerAPI {
         const data = await this.request("/inventory");
 
         this.state.setInventory(data || {});
+    }
+
+    // ---- Reconciliation + adjustment review ----
+
+    async loadProposals() {
+
+        const data = await this.request("/period-adjustments");
+
+        this.state.setProposals(data.adjustments || []);
+    }
+
+    async getReconciliation(periodId) {
+
+        return this.request(
+            `/reconciliation/${encodeURIComponent(periodId)}`
+        );
+    }
+
+    async saveReconciliation(periodId, data, steps) {
+
+        return this.request(
+            `/reconciliation/${encodeURIComponent(periodId)}`,
+            {
+                method: "PUT",
+                body: JSON.stringify({ data, steps })
+            }
+        );
+    }
+
+    async generateAdjustments(periodId, body) {
+
+        return this.request(
+            `/reconciliation/${encodeURIComponent(periodId)}/generate`,
+            {
+                method: "POST",
+                body: JSON.stringify(body)
+            }
+        );
+    }
+
+    async completeReconciliation(periodId) {
+
+        return this.request(
+            `/reconciliation/${encodeURIComponent(periodId)}/complete`,
+            { method: "POST" }
+        );
+    }
+
+    async setPeriodStatus(periodId, field, value) {
+
+        return this.request(
+            `/reconciliation/${encodeURIComponent(periodId)}/status`,
+            {
+                method: "PUT",
+                body: JSON.stringify({ field, value })
+            }
+        );
+    }
+
+    async reviseProposal(id, payload) {
+
+        return this.request(
+            `/period-adjustments/${encodeURIComponent(id)}`,
+            {
+                method: "PUT",
+                body: JSON.stringify(payload)
+            }
+        );
+    }
+
+    async approveProposal(id) {
+
+        return this.request(
+            `/period-adjustments/${encodeURIComponent(id)}/approve`,
+            { method: "POST" }
+        );
+    }
+
+    async rejectProposal(id, note = "") {
+
+        return this.request(
+            `/period-adjustments/${encodeURIComponent(id)}/reject`,
+            {
+                method: "POST",
+                body: JSON.stringify({ note })
+            }
+        );
+    }
+
+    async flagProposal(id, note = "") {
+
+        return this.request(
+            `/period-adjustments/${encodeURIComponent(id)}/needs-revision`,
+            {
+                method: "POST",
+                body: JSON.stringify({ note })
+            }
+        );
     }
 
     // ---- Fixed assets ----
@@ -1761,12 +2070,63 @@ class LedgerAccounting {
                 entries.push({
                     date: entry.date,
                     lines: entry.lines,
-                    adjusting: true
+                    adjusting: true,
+                    closing: this.isClosingType(entry.type)
                 });
             });
         }
 
         return entries;
+    }
+
+    static isClosingType(type) {
+
+        return type === "closing" || type === "closing_reversal";
+    }
+
+    // Year-end closing entries (and their reversals) move the year's
+    // profit into capital. They count in a report only when the report is
+    // dated after the closing date; on the closing date itself the books
+    // are shown "before closing", so the year's income is still visible.
+    static countsAsOf(entry, asOfDate) {
+
+        return !entry.closing || entry.date < asOfDate;
+    }
+
+    // Balance of one account (debits less credits) as of a date, from the
+    // same posted entries and adjusting entries the reports use.
+    static accountBalance(state, accountName, asOfDate) {
+
+        const key = String(accountName || "").trim().toLowerCase();
+
+        let balance = 0;
+
+        if (!key) return 0;
+
+        this.ledgerEntries(state, true).forEach(entry => {
+
+            if (entry.date > asOfDate) return;
+            if (!this.countsAsOf(entry, asOfDate)) return;
+
+            entry.lines.forEach(line => {
+
+                if (String(line.account || "").trim().toLowerCase() !== key) return;
+
+                balance += (Number(line.debit) || 0) - (Number(line.credit) || 0);
+            });
+        });
+
+        return Math.round(balance * 100) / 100;
+    }
+
+    static suppliesAccountName() {
+
+        return this.pickAccount(
+            ["Supplies", "Office Supplies"],
+            "asset",
+            /suppl/i,
+            "Supplies"
+        );
     }
 
     // Income, expenses and profit earned between two dates (inclusive).
@@ -1781,6 +2141,7 @@ class LedgerAccounting {
         this.ledgerEntries(state, true).forEach(entry => {
 
             if (entry.date < startDate || entry.date > endDate) return;
+            if (entry.closing) return;
 
             entries++;
 
@@ -1808,6 +2169,566 @@ class LedgerAccounting {
         };
     }
 
+    // -----------------------------------------------------
+    // ACCOUNT GROUPS (current / non-current, operating / other)
+    // A saved choice wins; otherwise the account name decides.
+    // -----------------------------------------------------
+
+    static classOf(state, name, type) {
+
+        const key = String(name || "").trim().toLowerCase();
+
+        const saved = state.accountClasses && state.accountClasses.get(key);
+
+        if (saved) return saved;
+
+        const text = String(name || "");
+
+        if (type === "asset") {
+
+            if (/accumulated (depreciation|amortization)/i.test(text)) {
+                return "non_current";
+            }
+
+            if (/cash|bank|receivable|inventor|suppl|prepaid|merchandise/i
+                .test(text)) {
+                return "current";
+            }
+
+            return /equipment|furniture|vehicle|building|\bland\b|machinery|computer|property|plant|intangible|goodwill|long[- ]term|leasehold|software|patent|franchise|fixture/i
+                .test(text) ? "non_current" : "current";
+        }
+
+        if (type === "liability") {
+
+            return /long[- ]term|mortgage|bonds?\b/i.test(text)
+                ? "non_current" : "current";
+        }
+
+        if (type === "revenue") {
+
+            return /other (income|revenue)|interest income|\bgain\b|dividend|rental income/i
+                .test(text) ? "other" : "operating";
+        }
+
+        if (type === "expense") {
+
+            return /interest (expense|cost)|finance (cost|charge)|loss on|foreign exchange|other expense|^interest$/i
+                .test(text) ? "other" : "operating";
+        }
+
+        return "operating";
+    }
+
+    // Debit-less-credit balance of every account. Closing entries dated
+    // inside [windowStart, asOf] are left out (see countsAsOf); anything
+    // dated before windowStart is real history and always counts.
+    static balancesBetween(state, asOfDate, windowStart) {
+
+        const map = new Map();
+
+        this.ledgerEntries(state, true).forEach(entry => {
+
+            if (entry.date > asOfDate) return;
+
+            if (entry.closing && entry.date >= windowStart) return;
+
+            entry.lines.forEach(line => {
+
+                const name = String(line.account || "").trim();
+
+                if (!name) return;
+
+                const key = name.toLowerCase();
+
+                if (!map.has(key)) {
+
+                    map.set(key, {
+                        name,
+                        type:
+                            line.accountType ||
+                            LedgerUtils.accountTypeFor(name),
+                        balance: 0
+                    });
+                }
+
+                map.get(key).balance +=
+                    (Number(line.debit) || 0) - (Number(line.credit) || 0);
+            });
+        });
+
+        return map;
+    }
+
+    // -----------------------------------------------------
+    // STATEMENT OF CASH FLOWS (indirect method)
+    // -----------------------------------------------------
+
+    static cashFlowStatement(state, startDate, endDate) {
+
+        const round = value => {
+            const rounded = Math.round(value * 100) / 100;
+            return rounded === 0 ? 0 : rounded;
+        };
+
+        const statements = this.financialStatements(state, startDate, endDate);
+
+        const start = this.balancesBetween(state, this.dayBefore(startDate), startDate);
+        const end = this.balancesBetween(state, endDate, startDate);
+
+        const names = new Set([...start.keys(), ...end.keys()]);
+
+        const changes = [];
+
+        names.forEach(key => {
+
+            const a = end.get(key) || start.get(key);
+
+            const before = start.has(key) ? start.get(key).balance : 0;
+            const after = end.has(key) ? end.get(key).balance : 0;
+
+            changes.push({
+                name: a.name,
+                type: a.type,
+                delta: round(after - before),   // debit-positive
+                before,
+                after
+            });
+        });
+
+        const isCash = c =>
+            c.type === "asset" &&
+            /cash|bank/i.test(c.name) &&
+            !/accumulated/i.test(c.name);
+
+        const isAccumulated = c =>
+            c.type === "asset" &&
+            /accumulated (depreciation|amortization)/i.test(c.name);
+
+        const isFinancingDebt = c =>
+            c.type === "liability" && (
+                this.classOf(state, c.name, "liability") === "non_current" ||
+                /loan|notes? payable|mortgage|borrow|bond/i.test(c.name)
+            );
+
+        const isDrawing = c => /drawing|withdraw/i.test(c.name);
+
+        const operating = [];
+        const investing = [];
+        const financing = [];
+
+        const addLine = (list, label, amount) => {
+            const value = round(amount);
+            if (value !== 0) list.push({ kind: "line", label, amount: value });
+        };
+
+        // working capital changes
+        const workingCapital = [];
+
+        let depreciation = 0;
+
+        changes.forEach(c => {
+
+            if (c.delta === 0) return;
+
+            if (isCash(c)) return;
+
+            if (c.type === "revenue" || c.type === "expense") return;
+
+            if (isAccumulated(c)) {
+                depreciation += -c.delta;
+                return;
+            }
+
+            if (c.type === "asset") {
+
+                if (this.classOf(state, c.name, "asset") === "non_current") {
+
+                    addLine(
+                        investing,
+                        c.delta > 0
+                            ? `Purchase of ${c.name}`
+                            : `Sale of ${c.name}`,
+                        -c.delta
+                    );
+
+                } else {
+
+                    addLine(
+                        workingCapital,
+                        c.delta > 0
+                            ? `Increase in ${c.name}`
+                            : `Decrease in ${c.name}`,
+                        -c.delta
+                    );
+                }
+
+                return;
+            }
+
+            if (c.type === "liability") {
+
+                if (isFinancingDebt(c)) {
+
+                    addLine(
+                        financing,
+                        c.delta < 0
+                            ? `Proceeds from ${c.name}`
+                            : `Repayment of ${c.name}`,
+                        -c.delta
+                    );
+
+                } else {
+
+                    addLine(
+                        workingCapital,
+                        c.delta < 0
+                            ? `Increase in ${c.name}`
+                            : `Decrease in ${c.name}`,
+                        -c.delta
+                    );
+                }
+
+                return;
+            }
+
+            if (c.type === "equity") {
+
+                addLine(
+                    financing,
+                    isDrawing(c)
+                        ? "Owner's drawings"
+                        : c.delta < 0
+                            ? "Owner's investments"
+                            : `Decrease in ${c.name}`,
+                    -c.delta
+                );
+            }
+        });
+
+        const sumOf = rows =>
+            round(rows.reduce((t, r) => t + r.amount, 0));
+
+        const operatingRows = [
+            { kind: "line", label: "Net income", amount: statements.netIncome }
+        ];
+
+        const adjustments = [];
+        addLine(adjustments, "Depreciation and amortization", depreciation);
+
+        if (adjustments.length) {
+            operatingRows.push(
+                { kind: "section", label: "Adjustments for non-cash items" },
+                ...adjustments
+            );
+        }
+
+        if (workingCapital.length) {
+            operatingRows.push(
+                { kind: "section", label: "Changes in working capital" },
+                ...workingCapital
+            );
+        }
+
+        const netOperating = round(
+            statements.netIncome + sumOf(adjustments) + sumOf(workingCapital)
+        );
+
+        operatingRows.push({
+            kind: "total",
+            label: "Net cash from operating activities",
+            amount: netOperating
+        });
+
+        const netInvesting = sumOf(investing);
+        const netFinancing = sumOf(financing);
+
+        const beginningCash = round(
+            changes.filter(isCash).reduce((t, c) => t + c.before, 0)
+        );
+
+        const endingCash = round(
+            changes.filter(isCash).reduce((t, c) => t + c.after, 0)
+        );
+
+        const netChange = round(netOperating + netInvesting + netFinancing);
+
+        const actualChange = round(endingCash - beginningCash);
+
+        const difference = round(netChange - actualChange);
+
+        const rows = [
+            { kind: "section", label: "Operating activities" },
+            ...operatingRows,
+
+            { kind: "section", label: "Investing activities" },
+            ...(investing.length
+                ? investing
+                : [{ kind: "line", label: "No investing activity", amount: 0 }]),
+            {
+                kind: "total",
+                label: "Net cash from investing activities",
+                amount: netInvesting
+            },
+
+            { kind: "section", label: "Financing activities" },
+            ...(financing.length
+                ? financing
+                : [{ kind: "line", label: "No financing activity", amount: 0 }]),
+            {
+                kind: "total",
+                label: "Net cash from financing activities",
+                amount: netFinancing
+            },
+
+            {
+                kind: "total",
+                label: "Net increase (decrease) in cash",
+                amount: netChange
+            },
+            { kind: "line", label: "Cash at beginning of period", amount: beginningCash },
+            { kind: "grand", label: "Cash at end of period", amount: endingCash }
+        ];
+
+        return {
+            startDate,
+            endDate,
+            rows,
+            netOperating,
+            netInvesting,
+            netFinancing,
+            netChange,
+            beginningCash,
+            endingCash,
+            difference,
+            reconciles: Math.abs(difference) < 0.005
+        };
+    }
+
+    static dayAfter(dateStr) {
+
+        const d = new Date(dateStr + "T00:00:00Z");
+
+        d.setUTCDate(d.getUTCDate() + 1);
+
+        return d.toISOString().slice(0, 10);
+    }
+
+    static dayBefore(dateStr) {
+
+        const d = new Date(dateStr + "T00:00:00Z");
+
+        d.setUTCDate(d.getUTCDate() - 1);
+
+        return d.toISOString().slice(0, 10);
+    }
+
+    // -----------------------------------------------------
+    // YEAR-END CLOSING
+    // Builds the closing entries from the books; nothing is posted here.
+    // -----------------------------------------------------
+
+    static closingPlan(state, fyStart, fyEnd) {
+
+        const round = value => Math.round(value * 100) / 100;
+
+        // balances as they stand before this year's closing
+        const balances = this.balancesBetween(state, fyEnd, fyEnd);
+
+        const list = [...balances.values()];
+
+        const isDrawing = name => /drawing|withdraw/i.test(name);
+
+        const equity = list.concat(
+            LedgerUtils.chart
+                .filter(a => a.account_type === "equity" && a.is_active !== false)
+                .map(a => ({ name: a.account_name, type: "equity", balance: 0 }))
+        ).filter(a => a.type === "equity");
+
+        const unique = (rows) => {
+            const seen = new Set();
+            return rows.filter(r => {
+                const key = r.name.toLowerCase();
+                if (seen.has(key)) return false;
+                seen.add(key);
+                return true;
+            });
+        };
+
+        const equityAccounts = unique(equity);
+
+        const summary = equityAccounts.find(
+            a => /income summary|profit (and|&) loss|expense and revenue summary/i
+                .test(a.name)
+        );
+
+        const capital =
+            equityAccounts.find(a => /capital/i.test(a.name) && !isDrawing(a.name)) ||
+            equityAccounts.find(a =>
+                !isDrawing(a.name) && a !== summary
+            );
+
+        const plan = {
+            fyStart,
+            fyEnd,
+            entries: [],
+            netIncome: 0,
+            capitalAccount: capital ? capital.name : "",
+            summaryAccount: summary ? summary.name : "",
+            error: "",
+            hasActivity: false
+        };
+
+        const revenue = list.filter(a => a.type === "revenue" && round(a.balance) !== 0);
+        const expenses = list.filter(a => a.type === "expense" && round(a.balance) !== 0);
+        const drawings = list.filter(
+            a => a.type === "equity" && isDrawing(a.name) && round(a.balance) !== 0
+        );
+
+        plan.hasActivity = revenue.length + expenses.length + drawings.length > 0;
+
+        if (!plan.hasActivity) return plan;
+
+        if (!capital) {
+            plan.error =
+                "There is no owner's capital account in your Chart of Accounts. Add one (type: Equity) before closing the year.";
+            return plan;
+        }
+
+        const target = summary ? summary.name : capital.name;
+
+        const line = (account, accountType, amount) => ({
+            account,
+            accountType,
+            debit: amount > 0 ? round(amount) : 0,
+            credit: amount < 0 ? round(-amount) : 0
+        });
+
+        const totalRevenue = round(revenue.reduce((t, a) => t - a.balance, 0));
+        const totalExpenses = round(expenses.reduce((t, a) => t + a.balance, 0));
+
+        plan.netIncome = round(totalRevenue - totalExpenses);
+
+        if (revenue.length) {
+            plan.entries.push({
+                description: `Close revenue accounts to ${target} — FY ending ${fyEnd}`,
+                lines: [
+                    // a credit-balance revenue account is debited to close it
+                    ...revenue.map(a => line(a.name, "revenue", -a.balance)),
+                    line(target, "equity", totalRevenue * -1)
+                ]
+            });
+        }
+
+        if (expenses.length) {
+            plan.entries.push({
+                description: `Close expense accounts to ${target} — FY ending ${fyEnd}`,
+                lines: [
+                    line(target, "equity", totalExpenses),
+                    ...expenses.map(a => line(a.name, "expense", -a.balance))
+                ]
+            });
+        }
+
+        if (summary && (revenue.length || expenses.length)) {
+            plan.entries.push({
+                description: `Close ${summary.name} to ${capital.name} — FY ending ${fyEnd}`,
+                lines: [
+                    line(summary.name, "equity", plan.netIncome),
+                    line(capital.name, "equity", -plan.netIncome)
+                ]
+            });
+        }
+
+        if (drawings.length) {
+            const totalDrawings = round(drawings.reduce((t, a) => t + a.balance, 0));
+            plan.entries.push({
+                description: `Close drawings to ${capital.name} — FY ending ${fyEnd}`,
+                lines: [
+                    line(capital.name, "equity", totalDrawings),
+                    ...drawings.map(a => line(a.name, "equity", -a.balance))
+                ]
+            });
+        }
+
+        // drop any entry that ended up empty or zero
+        plan.entries = plan.entries.filter(entry =>
+            entry.lines.some(l => l.debit > 0 || l.credit > 0)
+        );
+
+        return plan;
+    }
+
+    // Balances left after the closing entries: only balance sheet accounts.
+    static postClosingTrialBalance(state, plan) {
+
+        const round = value => {
+            const rounded = Math.round(value * 100) / 100;
+            return rounded === 0 ? 0 : rounded;
+        };
+
+        const balances = new Map();
+
+        this.balancesBetween(state, plan.fyEnd, plan.fyEnd).forEach((v, k) => {
+            balances.set(k, { ...v });
+        });
+
+        plan.entries.forEach(entry => entry.lines.forEach(l => {
+
+            const key = l.account.toLowerCase();
+
+            if (!balances.has(key)) {
+                balances.set(key, {
+                    name: l.account, type: l.accountType, balance: 0
+                });
+            }
+
+            balances.get(key).balance += l.debit - l.credit;
+        }));
+
+        const order = ["asset", "liability", "equity"];
+
+        const rows = [];
+
+        let leftover = 0;
+
+        balances.forEach(a => {
+
+            const value = round(a.balance);
+
+            if (a.type === "revenue" || a.type === "expense") {
+                leftover += Math.abs(value);
+                return;
+            }
+
+            if (value === 0) return;
+
+            rows.push({
+                account: a.name,
+                accountType: a.type,
+                debit: value > 0 ? value : 0,
+                credit: value < 0 ? -value : 0
+            });
+        });
+
+        rows.sort((x, y) =>
+            order.indexOf(x.accountType) - order.indexOf(y.accountType) ||
+            x.account.localeCompare(y.account)
+        );
+
+        const debit = round(rows.reduce((t, r) => t + r.debit, 0));
+        const credit = round(rows.reduce((t, r) => t + r.credit, 0));
+
+        return {
+            rows,
+            debit,
+            credit,
+            balanced: Math.abs(debit - credit) < 0.005,
+            temporaryClosed: round(leftover) === 0
+        };
+    }
+
+
     static financialStatements(state, startDate, endDate) {
 
         const round = value => {
@@ -1830,6 +2751,9 @@ class LedgerAccounting {
 
             const bucket =
                 entry.date < startDate ? "before" : "during";
+
+            // closing entries only matter once the period is after them
+            if (entry.closing && bucket === "during") return;
 
             entry.lines.forEach(line => {
 
@@ -1877,7 +2801,7 @@ class LedgerAccounting {
 
         const linesFor = (type, balanceFn, filter = () => true) =>
             list
-                .filter(a => a.type === type && filter(a.name))
+                .filter(a => a.type === type && filter(a.name, a))
                 .map(a => ({
                     label: a.name,
                     amount: round(balanceFn(a))
@@ -1889,27 +2813,46 @@ class LedgerAccounting {
             round(rows.reduce((total, row) => total + row.amount, 0));
 
         // ---------------- Income Statement (period) ----------------
+        const classOf = a => this.classOf(state, a.name, a.type);
+
         const revenue = linesFor(
-            "revenue", a => creditBalance(a, "during")
+            "revenue", a => creditBalance(a, "during"),
+            (name, a) => classOf(a) !== "other"
+        );
+
+        const otherIncome = linesFor(
+            "revenue", a => creditBalance(a, "during"),
+            (name, a) => classOf(a) === "other"
         );
 
         const cogs = linesFor(
             "expense",
             a => debitBalance(a, "during"),
-            name => isCogs(name)
+            (name, a) => isCogs(name) && classOf(a) !== "other"
         );
 
         const operating = linesFor(
             "expense",
             a => debitBalance(a, "during"),
-            name => !isCogs(name)
+            (name, a) => !isCogs(name) && classOf(a) !== "other"
+        );
+
+        const otherExpenses = linesFor(
+            "expense",
+            a => debitBalance(a, "during"),
+            (name, a) => classOf(a) === "other"
         );
 
         const totalRevenue = sum(revenue);
         const totalCogs = sum(cogs);
         const grossProfit = round(totalRevenue - totalCogs);
         const totalOperating = sum(operating);
-        const netIncome = round(grossProfit - totalOperating);
+        const operatingIncome = round(grossProfit - totalOperating);
+        const totalOtherIncome = sum(otherIncome);
+        const totalOtherExpenses = sum(otherExpenses);
+        const netIncome = round(
+            operatingIncome + totalOtherIncome - totalOtherExpenses
+        );
 
         const incomeRows = [
             { kind: "section", label: "Revenue" },
@@ -1938,13 +2881,49 @@ class LedgerAccounting {
                 kind: "total",
                 label: "Total operating expenses",
                 amount: totalOperating
-            },
-            {
-                kind: "grand",
-                label: netIncome < 0 ? "Net loss" : "Net income",
-                amount: netIncome
             }
         );
+
+        const hasOther = otherIncome.length || otherExpenses.length;
+
+        if (hasOther) {
+
+            incomeRows.push({
+                kind: "total",
+                label: "Income from operations",
+                amount: operatingIncome
+            });
+
+            if (otherIncome.length) {
+                incomeRows.push(
+                    { kind: "section", label: "Other income" },
+                    ...otherIncome.map(r => ({ kind: "line", ...r })),
+                    {
+                        kind: "total",
+                        label: "Total other income",
+                        amount: totalOtherIncome
+                    }
+                );
+            }
+
+            if (otherExpenses.length) {
+                incomeRows.push(
+                    { kind: "section", label: "Other expenses" },
+                    ...otherExpenses.map(r => ({ kind: "line", ...r })),
+                    {
+                        kind: "total",
+                        label: "Total other expenses",
+                        amount: totalOtherExpenses
+                    }
+                );
+            }
+        }
+
+        incomeRows.push({
+            kind: "grand",
+            label: netIncome < 0 ? "Net loss" : "Net income",
+            amount: netIncome
+        });
 
         // ---------------- Owner's Equity (period) ------------------
         const capitalAccounts = list.filter(
@@ -2033,6 +3012,23 @@ class LedgerAccounting {
             "liability", a => creditBalance(a, "before", "during")
         );
 
+        const classOfName = (row, type) =>
+            this.classOf(state, row.label, type);
+
+        const currentAssets =
+            assets.filter(r => classOfName(r, "asset") !== "non_current");
+
+        const nonCurrentAssets =
+            assets.filter(r => classOfName(r, "asset") === "non_current");
+
+        const currentLiabilities = liabilities.filter(
+            r => classOfName(r, "liability") !== "non_current"
+        );
+
+        const nonCurrentLiabilities = liabilities.filter(
+            r => classOfName(r, "liability") === "non_current"
+        );
+
         const capitalLines = capitalAccounts
             .map(a => ({
                 label: a.name,
@@ -2057,13 +3053,30 @@ class LedgerAccounting {
         const difference =
             round(totalAssets - totalLiabilitiesAndEquity);
 
+        const group = (title, rows, totalLabel) => rows.length ? [
+            { kind: "subsection", label: title },
+            ...rows.map(r => ({ kind: "line", ...r })),
+            { kind: "total", label: totalLabel, amount: sum(rows) }
+        ] : [];
+
         const balanceRows = [
             { kind: "section", label: "Assets" },
-            ...assets.map(r => ({ kind: "line", ...r })),
+            ...group("Current assets", currentAssets, "Total current assets"),
+            ...group(
+                "Non-current assets", nonCurrentAssets,
+                "Total non-current assets"
+            ),
             { kind: "total", label: "Total assets", amount: totalAssets },
 
             { kind: "section", label: "Liabilities" },
-            ...liabilities.map(r => ({ kind: "line", ...r })),
+            ...group(
+                "Current liabilities", currentLiabilities,
+                "Total current liabilities"
+            ),
+            ...group(
+                "Non-current liabilities", nonCurrentLiabilities,
+                "Total non-current liabilities"
+            ),
             {
                 kind: "total",
                 label: "Total liabilities",
@@ -2104,6 +3117,12 @@ class LedgerAccounting {
             equityRows,
             balanceRows,
             netIncome,
+            grossProfit,
+            operatingIncome,
+            totalOtherIncome,
+            totalOtherExpenses,
+            totalCurrentAssets: sum(currentAssets),
+            totalCurrentLiabilities: sum(currentLiabilities),
             totalAssets,
             totalLiabilities,
             totalEquity,
@@ -2132,6 +3151,7 @@ class LedgerAccounting {
         this.ledgerEntries(state, true).forEach(entry => {
 
             if (entry.date > asOfDate) return;
+            if (!this.countsAsOf(entry, asOfDate)) return;
 
             entry.lines.forEach(line => {
 
@@ -2153,8 +3173,10 @@ class LedgerAccounting {
                     });
                 }
 
+                // a closed year's closing entries are part of the opening
+                // position of later dates, not adjustments
                 const bucket = accounts.get(key)[
-                    entry.adjusting ? "adj" : "un"
+                    entry.adjusting && !entry.closing ? "adj" : "un"
                 ];
 
                 bucket.debit += Number(line.debit) || 0;
@@ -2236,7 +3258,8 @@ class LedgerAccounting {
             finalBalanced: balanced(totals.finalDebit, totals.finalCredit),
             hasRows: rows.length > 0,
             adjustmentCount: state.adjustments.filter(
-                entry => entry.date && entry.date <= asOfDate
+                entry => entry.date && entry.date <= asOfDate &&
+                    !this.isClosingType(entry.type)
             ).length
         };
     }
@@ -5010,6 +6033,16 @@ class LedgerView {
                                     </tr>`;
                             }
 
+                            if (row.kind === "subsection") {
+                                return `
+                                    <tr>
+                                        <td colspan="2"
+                                            style="font-weight:600;padding-top:8px;padding-left:14px;font-style:italic">
+                                            ${label}
+                                        </td>
+                                    </tr>`;
+                            }
+
                             const amount = LedgerUtils.peso(row.amount);
 
                             const style = {
@@ -5049,17 +6082,33 @@ class LedgerView {
             this.state, start, end
         );
 
+        const cash = LedgerAccounting.cashFlowStatement(
+            this.state, start, end
+        );
+
         const period =
             `${LedgerUtils.escape(start)} to ${LedgerUtils.escape(end)}`;
 
         const statusClass = report.isBalanced ? "positive" : "negative";
 
+        // No final statements from an unbalanced trial balance.
+        const trial = LedgerAccounting.adjustedTrialBalance(this.state, end);
+
+        const blocked = trial.hasRows && !trial.finalBalanced;
+
         return `
 
             ${this.heading(
                 "Financial Statements",
-                "Income Statement, Statement of Owner's Equity and Balance Sheet, prepared from your posted journal entries.",
+                "Income Statement, Statement of Owner's Equity, Balance Sheet and Statement of Cash Flows, prepared from your posted journal entries.",
                 `
+                    <button
+                        class="btn secondary"
+                        data-act="save-report"
+                        type="button"
+                    >
+                        Save report
+                    </button>
                     <button
                         class="btn secondary"
                         id="exportStatements"
@@ -5109,6 +6158,18 @@ class LedgerView {
             </div>
 
 
+            ${blocked ? `
+            <div class="card" style="margin-top:16px">
+                <p class="eyebrow">STATEMENTS NOT AVAILABLE</p>
+                <h3 class="negative">THE ADJUSTED TRIAL BALANCE DOES NOT BALANCE</h3>
+                <p class="tiny muted">
+                    Total debits and credits differ, so final financial
+                    statements cannot be shown yet. Review your journal
+                    entries and adjusting entries, then come back. You can
+                    inspect the balances on the Adjusted Trial Balance page.
+                </p>
+            </div>
+            ` : `
             <div class="grid metric-grid">
 
                 ${this.metric(
@@ -5186,6 +6247,551 @@ class LedgerView {
                 ${this.statementTable(report.balanceRows)}
             </div>
 
+
+            <div class="card table-card" style="margin-top:16px">
+                <div class="card-head">
+                    <h3>Statement of Cash Flows</h3>
+                    <span class="tiny muted">
+                        Indirect method · For the period ${period}
+                    </span>
+                </div>
+                ${this.statementTable(cash.rows)}
+                <p class="tiny ${cash.reconciles ? "positive" : "negative"}"
+                   style="padding:8px 16px">
+                    ${cash.reconciles
+                        ? "Cash at end of period agrees with the cash and bank accounts on the Balance Sheet."
+                        : `The cash flow does not agree with your cash accounts (difference ${LedgerUtils.peso(cash.difference)}). Check the account groups below.`}
+                </p>
+            </div>
+            `}
+
+            ${this.accountGroupsPanel()}
+
+            ${this.savedReportsPanel()}
+
+        `;
+    }
+
+    // -----------------------------------------------------
+    // YEAR-END CLOSING
+    // -----------------------------------------------------
+
+    closingEntriesTable(entries) {
+
+        if (!entries.length) {
+            return `<p class="tiny muted">There is nothing to close for this year.</p>`;
+        }
+
+        return `
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr><th>Account</th>
+                            <th style="text-align:right">Debit</th>
+                            <th style="text-align:right">Credit</th></tr>
+                    </thead>
+                    <tbody>
+                        ${entries.map(entry => `
+                            <tr><td colspan="3" style="font-weight:600;padding-top:12px">
+                                ${LedgerUtils.escape(entry.description)}
+                            </td></tr>
+                            ${entry.lines.filter(l => l.debit || l.credit).map(l => `
+                                <tr>
+                                    <td style="${l.credit ? "padding-left:32px" : "padding-left:12px"}">
+                                        ${LedgerUtils.escape(l.account)}
+                                    </td>
+                                    <td class="amount" style="text-align:right">
+                                        ${l.debit ? LedgerUtils.peso(l.debit) : ""}
+                                    </td>
+                                    <td class="amount" style="text-align:right">
+                                        ${l.credit ? LedgerUtils.peso(l.credit) : ""}
+                                    </td>
+                                </tr>`).join("")}
+                        `).join("")}
+                    </tbody>
+                </table>
+            </div>`;
+    }
+
+    auditTrail() {
+
+        const e = LedgerUtils.escape;
+        const events = this.state.auditEvents;
+
+        const names = {
+            adjustment_approved: "Adjustment approved and posted",
+            adjustment_rejected: "Adjustment rejected",
+            adjustment_flagged: "Adjustment sent back for revision",
+            adjustment_revised: "Adjustment revised",
+            reconciliation_completed: "Reconciliation completed",
+            reporting_settings_changed: "Reporting settings changed",
+            report_saved: "Financial statements saved",
+            account_classes_updated: "Account groups changed",
+            year_closed: "Fiscal year closed",
+            year_reopened: "Fiscal year reopened"
+        };
+
+        const detail = d => {
+            const x = d || {};
+            return [
+                x.description, x.label, x.title,
+                x.frequency && `${x.frequency}, fiscal year starts month ${x.fiscal_start_month}`,
+                x.fiscal_year_start && `FY ${x.fiscal_year_start}`,
+                x.reason && `Reason: ${x.reason}`,
+                x.note && `Note: ${x.note}`,
+                x.net_income != null && `Net income ${LedgerUtils.peso(x.net_income)}`
+            ].filter(Boolean).join(" · ");
+        };
+
+        return `
+            ${this.heading(
+                "Audit Trail",
+                "A permanent record of approvals, reconciliations, saved reports and year-end closings. It cannot be edited or deleted."
+            )}
+            <div class="card table-card" id="auditList">
+                ${events === null ? `<p class="muted" style="padding:16px">Loading…</p>`
+                : !events.length ? `<p class="muted" style="padding:16px">Nothing has been recorded yet.</p>` : `
+                <div class="table-wrap"><table>
+                    <thead><tr><th>When</th><th>What happened</th><th>Details</th></tr></thead>
+                    <tbody>
+                        ${events.map(ev => `<tr>
+                            <td class="tiny">${e(String(ev.created_at).slice(0, 16).replace("T", " "))}</td>
+                            <td>${e(names[ev.event_type] || ev.event_type)}</td>
+                            <td class="tiny muted">${e(detail(ev.details))}</td>
+                        </tr>`).join("")}
+                    </tbody></table></div>`}
+            </div>`;
+    }
+
+    yearEndClosing() {
+
+        const state = this.state;
+        const c = state.closing;
+        const fy = state.getClosingYear();
+
+        const head = this.heading(
+            "Year-End Closing",
+            "Finish the year step by step: check, adjust, report, close the books and carry balances forward."
+        );
+
+        if (!fy) {
+            return `${head}
+                <div class="card">
+                    <p>No reporting periods exist yet. Open
+                    <button class="btn ghost small" type="button"
+                        data-goto="reportingPeriods">Reporting Periods</button>
+                    first so a fiscal year can be created.</p>
+                </div>`;
+        }
+
+        const closing = state.getYearClosing(fy.start);
+        const closed = !!closing && closing.status === "complete";
+        const today = LedgerUtils.today();
+        const step = c.step;
+        const e = LedgerUtils.escape;
+
+        const stepNames = [
+            "Final checks", "Final adjustments", "Adjusted trial balance",
+            "Annual statements", "Closing entries", "Opening balances"
+        ];
+
+        const stepper = `
+            <div style="display:flex;flex-wrap:wrap;gap:8px;margin:16px 0">
+                ${stepNames.map((name, i) => `
+                    <button type="button"
+                        class="btn ${step === i + 1 ? "" : "secondary"} small"
+                        data-act="close-step" data-step="${i + 1}">
+                        ${i + 1}. ${name}
+                    </button>`).join("")}
+            </div>`;
+
+        const yearSelect = `
+            <div class="card trial-balance-filter">
+                <label for="closingYearSelect">
+                    <span class="trial-balance-filter-label">FISCAL YEAR</span>
+                    <select id="closingYearSelect">
+                        ${c.years.map(y => `
+                            <option value="${e(y.start)}"
+                                ${y.start === fy.start ? "selected" : ""}>
+                                ${e(y.start)} to ${e(y.end)}
+                                ${state.getYearClosing(y.start)?.status === "complete" ? " (closed)" : ""}
+                            </option>`).join("")}
+                    </select>
+                </label>
+                <div class="trial-balance-date-note">
+                    Status:
+                    <strong class="${closed ? "positive" : ""}">
+                        ${closed ? "CLOSED" : fy.end > today ? "IN PROGRESS (year not over)" : "OPEN"}
+                    </strong>
+                </div>
+            </div>`;
+
+        const asOf = fy.end;
+        const stmtEnd = fy.end > today ? today : fy.end;
+
+        let body = "";
+
+        if (step === 1) {
+
+            const checks = c.checks;
+
+            body = checks === null ? `
+                <p id="closingNeedsChecks" class="muted">Running checks…</p>`
+            : checks.error ? `
+                <p class="negative">${e(checks.error)}</p>` : `
+                <ul style="list-style:none;padding:0;margin:0">
+                    ${checks.checks.map(k => `
+                        <li style="padding:6px 0">
+                            <strong class="${k.ok ? "positive" : "negative"}">
+                                ${k.ok ? "✓" : "✗"}
+                            </strong>
+                            ${e(k.message)}
+                        </li>`).join("")}
+                </ul>
+                ${checks.warnings.map(w => `
+                    <p class="tiny" style="margin-top:8px">⚠ ${e(w)}</p>`).join("")}
+                <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+                    <button class="btn secondary" type="button" data-act="close-recheck">Re-check</button>
+                    <button class="btn ghost small" type="button" data-goto="reconciliation">Reconciliation</button>
+                    <button class="btn ghost small" type="button" data-goto="adjustmentReview">Adjustment Review</button>
+                    <button class="btn ghost small" type="button" data-goto="transactions">Transactions</button>
+                </div>`;
+
+        } else if (step === 2) {
+
+            const waiting = state.proposals.filter(p =>
+                ["pending", "revise_needed"].includes(p.status) &&
+                p.entryDate >= fy.start && p.entryDate <= fy.end
+            );
+
+            const approved = state.adjustments.filter(a =>
+                !LedgerAccounting.isClosingType(a.type) &&
+                a.date >= fy.start && a.date <= fy.end
+            );
+
+            body = `
+                <p>${approved.length} adjusting ${approved.length === 1 ? "entry is" : "entries are"}
+                   posted for this year.</p>
+                <p class="${waiting.length ? "negative" : "positive"}">
+                    ${waiting.length
+                        ? `${waiting.length} proposed adjustment(s) still need approval or rejection.`
+                        : "No proposed adjustments are waiting."}
+                </p>
+                ${waiting.map(p => `
+                    <p class="tiny">• ${e(p.description)} (${e(p.status.replace("_", " "))})</p>`).join("")}
+                <p style="margin-top:12px">
+                    <button class="btn secondary" type="button" data-goto="adjustmentReview">
+                        Open Adjustment Review
+                    </button>
+                    <button class="btn ghost small" type="button" data-goto="adjustingEntries">
+                        Adjusting Entries
+                    </button>
+                </p>`;
+
+        } else if (step === 3) {
+
+            const atb = LedgerAccounting.adjustedTrialBalance(state, asOf);
+
+            body = !atb.hasRows ? `<p class="muted">No entries yet.</p>` : `
+                <p class="${atb.finalBalanced ? "positive" : "negative"}">
+                    ${atb.finalBalanced
+                        ? "The adjusted trial balance balances."
+                        : "The adjusted trial balance does NOT balance. Fix this before closing."}
+                </p>
+                <div class="table-wrap"><table>
+                    <thead><tr><th>Account</th>
+                        <th style="text-align:right">Unadjusted Dr</th><th style="text-align:right">Unadjusted Cr</th>
+                        <th style="text-align:right">Adjusted Dr</th><th style="text-align:right">Adjusted Cr</th>
+                    </tr></thead>
+                    <tbody>
+                        ${atb.rows.map(r => `<tr>
+                            <td>${e(r.account)}</td>
+                            <td class="amount" style="text-align:right">${r.unDebit ? LedgerUtils.peso(r.unDebit) : ""}</td>
+                            <td class="amount" style="text-align:right">${r.unCredit ? LedgerUtils.peso(r.unCredit) : ""}</td>
+                            <td class="amount" style="text-align:right">${r.finalDebit ? LedgerUtils.peso(r.finalDebit) : ""}</td>
+                            <td class="amount" style="text-align:right">${r.finalCredit ? LedgerUtils.peso(r.finalCredit) : ""}</td>
+                        </tr>`).join("")}
+                        <tr style="font-weight:700">
+                            <td>Total</td>
+                            <td class="amount" style="text-align:right">${LedgerUtils.peso(atb.totals.unDebit)}</td>
+                            <td class="amount" style="text-align:right">${LedgerUtils.peso(atb.totals.unCredit)}</td>
+                            <td class="amount" style="text-align:right">${LedgerUtils.peso(atb.totals.finalDebit)}</td>
+                            <td class="amount" style="text-align:right">${LedgerUtils.peso(atb.totals.finalCredit)}</td>
+                        </tr>
+                    </tbody></table></div>`;
+
+        } else if (step === 4) {
+
+            const fs = LedgerAccounting.financialStatements(state, fy.start, stmtEnd);
+            const cash = LedgerAccounting.cashFlowStatement(state, fy.start, stmtEnd);
+
+            body = `
+                <p class="tiny muted">
+                    These annual statements are saved automatically as a frozen copy when the year is closed.
+                </p>
+                <h4>Income Statement</h4>${this.statementTable(fs.incomeRows)}
+                <h4 style="margin-top:12px">Statement of Owner's Equity</h4>${this.statementTable(fs.equityRows)}
+                <h4 style="margin-top:12px">Balance Sheet</h4>${this.statementTable(fs.balanceRows)}
+                <h4 style="margin-top:12px">Statement of Cash Flows</h4>${this.statementTable(cash.rows)}
+                <p class="tiny ${cash.reconciles ? "positive" : "negative"}">
+                    ${cash.reconciles ? "Cash flow agrees with your cash accounts." : "Cash flow does not agree with your cash accounts."}
+                </p>`;
+
+        } else if (step === 5) {
+
+            const plan = LedgerAccounting.closingPlan(state, fy.start, fy.end);
+            const pct = LedgerAccounting.postClosingTrialBalance(state, plan);
+
+            const posted = state.adjustments
+                .filter(a => LedgerAccounting.isClosingType(a.type) && a.date === fy.end)
+                .map(a => ({
+                    description: a.description,
+                    lines: a.lines
+                }));
+
+            body = closed ? `
+                <p class="positive">The year is closed. These entries are posted:</p>
+                ${this.closingEntriesTable(posted)}
+            ` : plan.error ? `
+                <p class="negative">${e(plan.error)}</p>
+                <p><button class="btn secondary" type="button" data-goto="chartOfAccounts">Chart of Accounts</button></p>
+            ` : `
+                <p>Net ${plan.netIncome < 0 ? "loss" : "income"} for the year:
+                   <strong>${LedgerUtils.peso(plan.netIncome)}</strong>.
+                   ${plan.summaryAccount
+                        ? `Revenue and expenses close to <strong>${e(plan.summaryAccount)}</strong>, then to <strong>${e(plan.capitalAccount)}</strong>.`
+                        : `Revenue and expenses close directly to <strong>${e(plan.capitalAccount)}</strong>.`}
+                </p>
+                ${this.closingEntriesTable(plan.entries)}
+                <h4 style="margin-top:16px">Post-closing trial balance</h4>
+                <p class="tiny ${pct.balanced && pct.temporaryClosed ? "positive" : "negative"}">
+                    ${pct.balanced && pct.temporaryClosed
+                        ? "Balanced, and every revenue and expense account is zero."
+                        : "The post-closing balances are not right. Do not close the year."}
+                </p>
+                <div class="table-wrap"><table>
+                    <thead><tr><th>Account</th><th style="text-align:right">Debit</th><th style="text-align:right">Credit</th></tr></thead>
+                    <tbody>
+                        ${pct.rows.map(r => `<tr><td>${e(r.account)}</td>
+                            <td class="amount" style="text-align:right">${r.debit ? LedgerUtils.peso(r.debit) : ""}</td>
+                            <td class="amount" style="text-align:right">${r.credit ? LedgerUtils.peso(r.credit) : ""}</td></tr>`).join("")}
+                        <tr style="font-weight:700"><td>Total</td>
+                            <td class="amount" style="text-align:right">${LedgerUtils.peso(pct.debit)}</td>
+                            <td class="amount" style="text-align:right">${LedgerUtils.peso(pct.credit)}</td></tr>
+                    </tbody></table></div>
+                <div class="card" style="margin-top:16px">
+                    <label>
+                        <input type="checkbox" id="closingConfirm">
+                        I understand this posts the closing entries and locks every date up to ${e(fy.end)}.
+                        Changes afterwards need the year to be reopened.
+                    </label>
+                    <p style="margin-top:12px">
+                        <button class="btn" type="button" data-act="close-post"
+                            ${c.busy ? "disabled" : ""}>
+                            Post closing entries and close the year
+                        </button>
+                    </p>
+                </div>`;
+
+        } else {
+
+            const plan = LedgerAccounting.closingPlan(state, fy.start, fy.end);
+            const pct = LedgerAccounting.postClosingTrialBalance(state, plan);
+
+            const latestClosed = state.closing.closings
+                .filter(x => x.status === "complete")
+                .sort((a, b) => a.fiscalYearStart < b.fiscalYearStart ? 1 : -1)[0];
+
+            body = `
+                <p>${closed
+                    ? `These balances were carried forward to the new year starting ${e(LedgerAccounting.dayAfter(fy.end))}.`
+                    : "These balances will be carried forward when you close the year (step 5)."}</p>
+                <div class="table-wrap"><table>
+                    <thead><tr><th>Account</th><th style="text-align:right">Debit</th><th style="text-align:right">Credit</th></tr></thead>
+                    <tbody>
+                        ${pct.rows.map(r => `<tr><td>${e(r.account)}</td>
+                            <td class="amount" style="text-align:right">${r.debit ? LedgerUtils.peso(r.debit) : ""}</td>
+                            <td class="amount" style="text-align:right">${r.credit ? LedgerUtils.peso(r.credit) : ""}</td></tr>`).join("")}
+                    </tbody></table></div>
+                ${closed && latestClosed && latestClosed.id === closing.id ? `
+                <div class="card" style="margin-top:16px">
+                    <h4>Reopen this year</h4>
+                    <p class="tiny muted">
+                        Reopening posts reversing entries (nothing is deleted) and unlocks the year so you can correct it.
+                    </p>
+                    <label>Reason<br><input id="reopenReason" type="text" style="width:100%"></label>
+                    <label style="display:block;margin-top:8px">Type REOPEN to confirm<br>
+                        <input id="reopenConfirm" type="text"></label>
+                    <p style="margin-top:12px">
+                        <button class="btn secondary" type="button" data-act="close-reopen"
+                            data-id="${e(closing.id)}">Reopen year</button>
+                    </p>
+                </div>` : ""}`;
+        }
+
+        const history = c.audit.length ? `
+            <div class="card" style="margin-top:16px">
+                <p class="eyebrow">YEAR-END HISTORY</p>
+                ${c.audit.map(a => `
+                    <p class="tiny">
+                        ${e(String(a.created_at).slice(0, 16).replace("T", " "))} —
+                        ${e(a.event_type === "year_closed" ? "Closed" : "Reopened")}
+                        ${e(String((a.details || {}).fiscal_year_start || ""))}
+                        ${a.details && a.details.reason ? "· " + e(a.details.reason) : ""}
+                    </p>`).join("")}
+            </div>` : "";
+
+        return `
+            ${head}
+            ${yearSelect}
+            ${stepper}
+            <div class="card table-card">
+                <div class="card-head"><h3>${step}. ${stepNames[step - 1]}</h3></div>
+                <div style="padding:16px">${body}</div>
+                <div style="padding:0 16px 16px;display:flex;justify-content:space-between">
+                    <button class="btn secondary" type="button" data-act="close-step"
+                        data-step="${Math.max(1, step - 1)}" ${step === 1 ? "disabled" : ""}>Back</button>
+                    <button class="btn secondary" type="button" data-act="close-step"
+                        data-step="${Math.min(6, step + 1)}" ${step === 6 ? "disabled" : ""}>Next</button>
+                </div>
+            </div>
+            ${history}
+        `;
+    }
+
+    accountGroupsPanel() {
+
+        const groups = {
+            asset: [["current", "Current"], ["non_current", "Non-current"]],
+            liability: [["current", "Current"], ["non_current", "Non-current"]],
+            revenue: [["operating", "Operating"], ["other", "Other income"]],
+            expense: [["operating", "Operating"], ["other", "Other expense"]]
+        };
+
+        const accounts = LedgerUtils.chart
+            .filter(a => groups[a.account_type] && a.is_active !== false)
+            .sort((a, b) =>
+                Object.keys(groups).indexOf(a.account_type) -
+                    Object.keys(groups).indexOf(b.account_type) ||
+                a.account_name.localeCompare(b.account_name)
+            );
+
+        if (!accounts.length) return "";
+
+        const rows = accounts.map(a => {
+
+            const saved = this.state.accountClasses.get(
+                a.account_name.toLowerCase()
+            ) || "";
+
+            const auto = LedgerAccounting.classOf(
+                { accountClasses: new Map() }, a.account_name, a.account_type
+            );
+
+            const label = Object.fromEntries(groups[a.account_type])[auto];
+
+            return `
+                <tr>
+                    <td>${LedgerUtils.escape(a.account_name)}</td>
+                    <td class="tiny muted">
+                        ${LedgerUtils.escape(
+                            LedgerUtils.ACCOUNT_TYPE_LABELS[a.account_type]
+                        )}
+                    </td>
+                    <td>
+                        <select data-class-account="${LedgerUtils.escape(a.account_name)}">
+                            <option value="">Automatic (${LedgerUtils.escape(label)})</option>
+                            ${groups[a.account_type].map(([value, text]) => `
+                                <option value="${value}"
+                                    ${saved === value ? "selected" : ""}>
+                                    ${text}
+                                </option>`).join("")}
+                        </select>
+                    </td>
+                </tr>`;
+        }).join("");
+
+        return `
+            <details class="card" style="margin-top:16px">
+                <summary style="cursor:pointer;font-weight:600">
+                    Account groups (current / non-current, operating / other)
+                </summary>
+                <p class="tiny muted" style="margin:8px 0">
+                    Groups are guessed from account names. Change one if a
+                    statement puts an account in the wrong section.
+                </p>
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr><th>Account</th><th>Type</th><th>Group</th></tr>
+                        </thead>
+                        <tbody>${rows}</tbody>
+                    </table>
+                </div>
+                <div style="margin-top:12px">
+                    <button class="btn" type="button" data-act="classes-save">
+                        Save groups
+                    </button>
+                </div>
+            </details>
+        `;
+    }
+
+    savedReportsPanel() {
+
+        const reports = this.state.savedReports || [];
+
+        const viewed = this.state.viewedReport;
+
+        const list = reports.length ? `
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr><th>Report</th><th>Period</th><th>Saved</th><th></th></tr>
+                    </thead>
+                    <tbody>
+                        ${reports.map(r => `
+                            <tr>
+                                <td>${LedgerUtils.escape(r.title)}</td>
+                                <td>${LedgerUtils.escape(String(r.start_date).slice(0, 10))}
+                                    to ${LedgerUtils.escape(String(r.end_date).slice(0, 10))}</td>
+                                <td class="tiny muted">
+                                    ${LedgerUtils.escape(String(r.created_at || "").slice(0, 10))}
+                                </td>
+                                <td>
+                                    <button class="btn secondary" type="button"
+                                        data-act="report-view"
+                                        data-id="${LedgerUtils.escape(r.id)}">
+                                        View
+                                    </button>
+                                </td>
+                            </tr>`).join("")}
+                    </tbody>
+                </table>
+            </div>` : `<p class="tiny muted">No saved reports yet. Saved reports are frozen copies and never change.</p>`;
+
+        const data = viewed && viewed.data;
+
+        return `
+            <div class="card" style="margin-top:16px">
+                <p class="eyebrow">SAVED REPORTS</p>
+                ${list}
+            </div>
+            ${data ? `
+            <div class="card table-card" style="margin-top:16px">
+                <div class="card-head">
+                    <h3>${LedgerUtils.escape(viewed.title)}</h3>
+                    <span class="tiny muted">Saved copy — figures do not change</span>
+                </div>
+                ${["income", "equity", "balance", "cash"].filter(k => data[k]).map(k => `
+                    <h4 style="padding:8px 16px 0">${{
+                        income: "Income Statement",
+                        equity: "Statement of Owner's Equity",
+                        balance: "Balance Sheet",
+                        cash: "Statement of Cash Flows"
+                    }[k]}</h4>
+                    ${this.statementTable(data[k])}`).join("")}
+            </div>` : ""}
         `;
     }
 
@@ -5793,6 +7399,11 @@ class LedgerView {
 
         const today = LedgerUtils.today();
 
+        const waitingCount = period
+            ? this.state.getPeriodProposals(period.id)
+                .filter(p => LedgerState.isWaiting(p)).length
+            : 0;
+
         const current = period
             ? LedgerAccounting.periodSummary(this.state, period.start, period.end)
             : null;
@@ -5924,6 +7535,11 @@ class LedgerView {
                 </div>
 
                 <div class="breakdown-row">
+                    <span>Adjustments waiting for approval</span>
+                    <strong>${waitingCount}</strong>
+                </div>
+
+                <div class="breakdown-row">
                     <span>Adjusted trial balance</span>
                     ${this.reportingStatusBadge(period.adjustedTb)}
                 </div>
@@ -5943,6 +7559,13 @@ class LedgerView {
                 </div>
 
                 <div class="modal-actions" style="margin-top:12px">
+                    <button
+                        class="btn primary"
+                        type="button"
+                        data-goto="reconciliation"
+                    >
+                        Reconcile this period
+                    </button>
                     <button
                         class="btn secondary"
                         id="useReportingPeriod"
@@ -6090,6 +7713,767 @@ class LedgerView {
                     : ""
             }
 
+        `;
+    }
+
+
+    // =====================================================
+    // PERIOD-END RECONCILIATION (wizard)
+    // =====================================================
+
+    reconciliation() {
+
+        const period = this.state.getReportingPeriod();
+        const recon = this.state.recon;
+
+        const head = this.heading(
+            "Period-End Reconciliation",
+            "Check your records against what you actually have. Ledger only proposes an adjustment where something does not match, and nothing is posted until you approve it."
+        );
+
+        if (!period) {
+            return head + `
+                <div class="card">
+                    <p class="muted">
+                        Choose your reporting frequency on the
+                        Reporting Periods page first.
+                    </p>
+                </div>`;
+        }
+
+        if (recon.periodId !== period.id) {
+            return head + `
+                <div class="card"><p class="muted">Loading your reconciliation…</p></div>`;
+        }
+
+        const steps = [
+            ["inventory", "Inventory"],
+            ["supplies", "Supplies"],
+            ["assets", "Fixed assets"],
+            ["expenses", "Unpaid expenses"],
+            ["review", "Review"]
+        ];
+
+        const current = Math.min(Math.max(recon.step, 1), steps.length);
+        const today = LedgerUtils.today();
+
+        const periodOptions = [...this.state.reporting.periods].reverse()
+            .map(item => `
+                <option value="${LedgerUtils.escape(item.start)}"
+                    ${item.start === period.start ? "selected" : ""}>
+                    ${LedgerUtils.escape(item.label)}
+                </option>`).join("");
+
+        const stepper = steps.map(([key, label], index) => {
+
+            const done = recon.steps[key] === "complete";
+
+            return `
+                <button
+                    type="button"
+                    class="btn ${index + 1 === current ? "primary" : "secondary"} small"
+                    data-act="recon-step"
+                    data-step="${index + 1}"
+                >
+                    ${done ? "✓ " : `${index + 1}. `}${label}
+                </button>`;
+        }).join(" ");
+
+        let body = "";
+
+        if (current === 1) body = this.reconInventoryStep();
+        if (current === 2) body = this.reconSuppliesStep(period);
+        if (current === 3) body = this.reconAssetsStep();
+        if (current === 4) body = this.reconExpensesStep(period);
+        if (current === 5) body = this.reconReviewStep(period);
+
+        return `
+
+            ${head}
+
+            <div class="card">
+
+                <label>
+                    Reporting period
+                    <select id="reconPeriodSelect">${periodOptions}</select>
+                </label>
+
+                <p class="tiny muted" style="margin:8px 0 12px">
+                    ${LedgerUtils.escape(period.start)} to
+                    ${LedgerUtils.escape(period.end)}
+                    · Reconciliation:
+                    ${this.reportingStatusBadge(period.reconciliation)}
+                    ${period.end > today
+                        ? " · This period has not ended yet, so you can prepare now and run it again at period end."
+                        : ""}
+                </p>
+
+                <div>${stepper}</div>
+
+                <p class="tiny muted" style="margin-top:8px">
+                    Step ${current} of ${steps.length}
+                </p>
+
+            </div>
+
+            <div class="card" style="margin-top:16px">
+                ${body}
+            </div>
+
+            <div class="modal-actions" style="margin-top:16px">
+
+                <button type="button" class="btn secondary"
+                    data-act="recon-prev" ${current === 1 ? "disabled" : ""}>
+                    ← Previous
+                </button>
+
+                <button type="button" class="btn secondary" data-act="recon-save">
+                    Save progress
+                </button>
+
+                ${current < steps.length ? `
+                <button type="button" class="btn primary" data-act="recon-next">
+                    Next →
+                </button>` : ""}
+
+            </div>
+        `;
+    }
+
+    reconInventoryStep() {
+
+        const items = this.state.inventory;
+        const saved = this.state.recon.draft.inventory || {};
+
+        const statuses = [
+            ["ok", "Counted, nothing wrong"],
+            ["missing", "Missing"],
+            ["damaged", "Damaged"],
+            ["obsolete", "Obsolete"]
+        ];
+
+        const rows = items.map(item => {
+
+            const entry = saved[item.id] || {};
+
+            const hasCount = entry.actual !== null &&
+                entry.actual !== undefined && entry.actual !== "";
+
+            const difference = hasCount
+                ? Math.round((item.quantity - Number(entry.actual)) * 100) / 100
+                : null;
+
+            const result = !hasCount
+                ? "—"
+                : difference > 0
+                    ? `<span class="negative">${difference} short</span>`
+                    : difference < 0
+                        ? `<span>${-difference} extra</span>`
+                        : `<span class="positive">Matches</span>`;
+
+            const ending = hasCount
+                ? LedgerUtils.peso(Number(entry.actual) * item.averageCost)
+                : "—";
+
+            const id = LedgerUtils.escape(item.id);
+
+            return `
+                <tr>
+                    <td><strong>${LedgerUtils.escape(item.name)}</strong></td>
+                    <td>${item.quantity}</td>
+                    <td>${LedgerUtils.peso(item.averageCost)}</td>
+                    <td>
+                        <input type="number" min="0" step="0.01" style="width:90px"
+                            data-rc="inv-actual" data-id="${id}"
+                            value="${hasCount ? LedgerUtils.escape(entry.actual) : ""}">
+                    </td>
+                    <td>
+                        <select data-rc="inv-status" data-id="${id}">
+                            ${statuses.map(([value, label]) => `
+                                <option value="${value}"
+                                    ${(entry.status || "ok") === value ? "selected" : ""}>
+                                    ${label}</option>`).join("")}
+                        </select>
+                    </td>
+                    <td>
+                        <input type="number" min="0" step="0.01" style="width:90px"
+                            placeholder="optional"
+                            data-rc="inv-nrv" data-id="${id}"
+                            value="${entry.nrv !== null && entry.nrv !== undefined ? LedgerUtils.escape(entry.nrv) : ""}">
+                    </td>
+                    <td>
+                        <input type="text" maxlength="150" placeholder="Why?"
+                            data-rc="inv-note" data-id="${id}"
+                            value="${LedgerUtils.escape(entry.note || "")}">
+                    </td>
+                    <td>${result}</td>
+                    <td class="amount">${ending}</td>
+                </tr>`;
+        }).join("");
+
+        return `
+            <h3>Step 1 — Count your inventory</h3>
+            <p class="muted-small">
+                Count what is physically on your shelves and type it in.
+                If the count is lower than your records, Ledger proposes a
+                loss; if an item would now sell for less than it cost, enter
+                its selling price less selling costs (net realisable value)
+                and Ledger proposes a write-down. Leave a row blank to skip it.
+            </p>
+            ${items.length ? `
+            <div class="table-wrap">
+                <table>
+                    <thead><tr>
+                        <th>Item</th><th>Recorded qty</th><th>Unit cost</th>
+                        <th>Actual qty</th><th>Condition</th>
+                        <th>Net realisable value / unit</th><th>Explanation</th>
+                        <th>Result</th><th>Ending value</th>
+                    </tr></thead>
+                    <tbody>${rows}</tbody>
+                </table>
+            </div>` : `
+            <p class="muted">You have no inventory items, so there is nothing to count. You can continue to the next step.</p>`}
+        `;
+    }
+
+    reconSuppliesStep(period) {
+
+        const items = this.state.supplies;
+        const saved = this.state.recon.draft.supplies || {};
+        const counts = saved.counts || {};
+
+        const account = LedgerAccounting.suppliesAccountName();
+
+        const book = LedgerAccounting.accountBalance(
+            this.state, account, period.end
+        );
+
+        let ending = 0;
+
+        const rows = items.map(item => {
+
+            const entered = counts[item.id] || {};
+
+            const units = entered.quantity !== undefined &&
+                entered.quantity !== null && entered.quantity !== ""
+                ? Number(entered.quantity) : item.unitsOnHand;
+
+            const cost = entered.unit_cost !== undefined &&
+                entered.unit_cost !== null && entered.unit_cost !== ""
+                ? Number(entered.unit_cost) : item.unitCost;
+
+            ending += units * cost;
+
+            const id = LedgerUtils.escape(item.id);
+
+            return `
+                <tr>
+                    <td><strong>${LedgerUtils.escape(item.name)}</strong></td>
+                    <td>${item.unitsOnHand}</td>
+                    <td>
+                        <input type="number" min="0" step="0.01" style="width:90px"
+                            data-rc="sup-qty" data-id="${id}" value="${units}">
+                    </td>
+                    <td>
+                        <input type="number" min="0" step="0.01" style="width:90px"
+                            data-rc="sup-cost" data-id="${id}" value="${cost}">
+                    </td>
+                    <td class="amount">${LedgerUtils.peso(units * cost)}</td>
+                </tr>`;
+        }).join("");
+
+        ending = Math.round(ending * 100) / 100;
+
+        const used = Math.round((book - ending) * 100) / 100;
+
+        return `
+            <h3>Step 2 — Supplies and materials</h3>
+            <p class="muted-small">
+                Count the supplies you still have. Anything left over stays
+                recorded as an asset; only what was used up becomes an
+                expense. Supplies you already recorded as an expense when
+                you bought them are not counted twice, because Ledger
+                compares your count with the balance of your
+                <strong>${LedgerUtils.escape(account)}</strong> account.
+            </p>
+            ${items.length ? `
+            <div class="table-wrap">
+                <table>
+                    <thead><tr>
+                        <th>Supply</th><th>Recorded units</th>
+                        <th>Units remaining</th><th>Cost per unit</th>
+                        <th>Value remaining</th>
+                    </tr></thead>
+                    <tbody>${rows}</tbody>
+                </table>
+            </div>
+
+            <div class="breakdown-row" style="margin-top:12px">
+                <span>${LedgerUtils.escape(account)} balance in your ledger (supplies bought, not yet used)</span>
+                <strong>${LedgerUtils.peso(book)}</strong>
+            </div>
+            <div class="breakdown-row">
+                <span>Supplies remaining (your count)</span>
+                <strong>${LedgerUtils.peso(ending)}</strong>
+            </div>
+            <div class="breakdown-row">
+                <span>Supplies used this period</span>
+                <strong class="${used < 0 ? "negative" : ""}">
+                    ${used > 0 ? LedgerUtils.peso(used) : used < 0 ? LedgerUtils.peso(used) : "None"}
+                </strong>
+            </div>
+            ${used < 0 ? `<p class="tiny negative">Your count is higher than your records. Check for supplies you bought but did not record.</p>` : ""}
+            ${book === 0 && items.length ? `<p class="tiny muted">The ${LedgerUtils.escape(account)} account has no balance, so no supplies entry will be proposed.</p>` : ""}
+
+            <label style="margin-top:12px;display:block">
+                Were any supplies damaged or thrown away?
+                <input type="text" maxlength="200" data-rc="sup-discarded"
+                    value="${LedgerUtils.escape(saved.discarded || "")}">
+            </label>
+            <label style="margin-top:8px;display:block">
+                Did you buy more supplies this period? (Mention them here)
+                <input type="text" maxlength="200" data-rc="sup-purchased"
+                    value="${LedgerUtils.escape(saved.purchased || "")}">
+            </label>
+            ` : `
+            <p class="muted">
+                You have not registered any supplies yet. Add them on the
+                Supplies page, then come back. You can continue to the
+                next step.
+            </p>`}
+        `;
+    }
+
+    reconAssetsStep() {
+
+        const assets = this.state.fixedAssets;
+        const reviewed = this.state.recon.draft.assets_reviewed === true;
+
+        const method = {
+            straight_line: "Straight-line",
+            declining_balance: "Declining balance"
+        };
+
+        const rows = assets.map(asset => `
+            <tr>
+                <td><strong>${LedgerUtils.escape(asset.name)}</strong></td>
+                <td>${LedgerUtils.peso(asset.cost)}</td>
+                <td>${LedgerUtils.peso(asset.residualValue)}</td>
+                <td>${Math.round(asset.usefulLifeMonths / 12 * 10) / 10} yrs</td>
+                <td>${LedgerUtils.escape(method[asset.method] || asset.method)}</td>
+                <td>${LedgerUtils.peso(asset.accumulatedDepreciation)}</td>
+                <td>${LedgerUtils.peso(asset.carryingAmount)}</td>
+                <td>${LedgerUtils.escape(asset.condition)}</td>
+                <td>${asset.status === "disposed" ? "Disposed" : "In use"}</td>
+            </tr>`).join("");
+
+        return `
+            <h3>Step 3 — Review your fixed assets</h3>
+            <p class="muted-small">
+                Ledger works out depreciation for this period automatically
+                from the figures below. Check that each asset's useful life,
+                residual value, condition and disposal status are still
+                right. A month that has already been depreciated is never
+                depreciated again, even if you switch between monthly,
+                quarterly and yearly reports.
+            </p>
+            ${assets.length ? `
+            <div class="table-wrap">
+                <table>
+                    <thead><tr>
+                        <th>Asset</th><th>Cost</th><th>Residual</th><th>Life</th>
+                        <th>Method</th><th>Depreciation so far</th>
+                        <th>Carrying amount</th><th>Condition</th><th>Status</th>
+                    </tr></thead>
+                    <tbody>${rows}</tbody>
+                </table>
+            </div>
+            <p style="margin-top:12px">
+                <button class="btn ghost small" type="button" data-goto="fixedAssets">
+                    Edit fixed assets
+                </button>
+            </p>
+            <label style="display:block;margin-top:8px">
+                <input type="checkbox" data-rc="assets-reviewed" ${reviewed ? "checked" : ""}>
+                I have reviewed the useful life, residual value, condition and
+                disposals of my assets.
+            </label>` : `
+            <p class="muted">You have no fixed assets registered, so there is no depreciation to calculate.</p>`}
+        `;
+    }
+
+    reconExpensesStep(period) {
+
+        const rows = this.state.recon.draft.expenses || [];
+
+        const presets = [
+            "Electricity bill", "Water bill", "Internet bill", "Salaries",
+            "Rent", "Supplier payment", "Interest", "Other unpaid expense"
+        ];
+
+        const cards = rows.map(row => {
+
+            const id = LedgerUtils.escape(row.id);
+
+            return `
+                <div class="card" data-rc-row="${id}" style="margin-top:12px">
+                    <div class="form-grid" style="padding:0">
+                        <label class="span-2">
+                            What is it?
+                            <input type="text" maxlength="150" data-rc="exp-desc"
+                                value="${LedgerUtils.escape(row.description || "")}">
+                        </label>
+                        <label>
+                            Amount (₱)
+                            <input type="number" min="0.01" step="0.01" data-rc="exp-amount"
+                                value="${row.amount ?? ""}">
+                        </label>
+                        <label>
+                            Date incurred
+                            <input type="date" data-rc="exp-date"
+                                min="${LedgerUtils.escape(period.start)}"
+                                max="${LedgerUtils.escape(period.end)}"
+                                value="${LedgerUtils.escape(row.date || period.end)}">
+                        </label>
+                        <label>
+                            Expense account (debit)
+                            <select data-rc="exp-debit">
+                                ${LedgerUtils.accountSelectOptions(row.debit_account)}
+                            </select>
+                        </label>
+                        <label>
+                            Where it is owed (credit)
+                            <select data-rc="exp-credit">
+                                ${LedgerUtils.accountSelectOptions(row.credit_account)}
+                            </select>
+                        </label>
+                        <label>
+                            Payment status
+                            <select data-rc="exp-status">
+                                <option value="unpaid" ${row.payment_status !== "paid" ? "selected" : ""}>Not yet paid</option>
+                                <option value="paid" ${row.payment_status === "paid" ? "selected" : ""}>Already paid (no entry needed)</option>
+                            </select>
+                        </label>
+                        <label class="span-2">
+                            Notes
+                            <input type="text" maxlength="200" data-rc="exp-notes"
+                                value="${LedgerUtils.escape(row.notes || "")}">
+                        </label>
+                    </div>
+                    <button type="button" class="btn ghost small"
+                        data-act="recon-remove-expense" data-id="${id}">
+                        Remove
+                    </button>
+                </div>`;
+        }).join("");
+
+        return `
+            <h3>Step 4 — Bills and costs you owe but have not paid</h3>
+            <p class="muted-small">
+                An expense belongs to the period it was used, even if you pay
+                it later. Add anything you owe at the end of this period, for
+                example an electricity bill of ₱2,500 becomes a debit to
+                Utilities Expense and a credit to Utilities Payable. Pick
+                accounts from your own Chart of Accounts. If you already
+                recorded the bill as an expense transaction, do not add it
+                again. Ledger warns you if it spots the same amount.
+            </p>
+
+            <div>
+                ${presets.map(label => `
+                    <button type="button" class="btn secondary small"
+                        data-act="recon-add-expense"
+                        data-preset="${LedgerUtils.escape(label)}">＋ ${LedgerUtils.escape(label)}</button>
+                `).join(" ")}
+            </div>
+
+            ${cards || `<p class="muted" style="margin-top:12px">Nothing added. If you owe nothing, continue to the review.</p>`}
+
+            <p class="tiny muted" style="margin-top:12px">
+                For prepaid expenses, unearned revenue, accrued revenue and
+                bad debts, use the Adjusting Entries page.
+            </p>
+        `;
+    }
+
+    reconReviewStep(period) {
+
+        const recon = this.state.recon;
+        const draft = recon.draft;
+
+        const mine = this.state.getPeriodProposals(period.id);
+        const waiting = mine.filter(p => LedgerState.isWaiting(p)).length;
+        const approved = mine.filter(p => p.status === "approved").length;
+
+        const countedInventory = Object.values(draft.inventory || {})
+            .filter(x => x && x.actual !== null && x.actual !== undefined && x.actual !== "").length;
+
+        const unpaid = (draft.expenses || [])
+            .filter(x => x.payment_status !== "paid").length;
+
+        return `
+            <h3>Step 5 — Review and create adjusting entries</h3>
+            <p class="muted-small">
+                Ledger now compares what you told it with your records and
+                proposes an adjusting entry only where something needs
+                changing. Nothing is posted yet. You approve each entry on
+                the Adjustment Review page.
+            </p>
+
+            <div class="breakdown-row"><span>Inventory items counted</span><strong>${countedInventory}</strong></div>
+            <div class="breakdown-row"><span>Supplies counted</span><strong>${draft.supplies ? "Yes" : "No"}</strong></div>
+            <div class="breakdown-row"><span>Fixed assets reviewed</span><strong>${draft.assets_reviewed ? "Yes" : "No"}</strong></div>
+            <div class="breakdown-row"><span>Unpaid items entered</span><strong>${unpaid}</strong></div>
+
+            <p style="margin-top:14px">
+                <button type="button" class="btn primary" data-act="recon-generate">
+                    Create adjusting entries
+                </button>
+            </p>
+
+            <p class="tiny muted">
+                Running this again replaces entries still waiting for
+                approval (including any you revised). Entries you already
+                approved are never touched or duplicated.
+            </p>
+
+            ${recon.warnings.length ? `
+            <div class="card" style="margin-top:12px">
+                <strong>Please check</strong>
+                <ul>
+                    ${recon.warnings.map(w => `<li class="tiny">${LedgerUtils.escape(w)}</li>`).join("")}
+                </ul>
+            </div>` : ""}
+
+            <div class="breakdown-row" style="margin-top:14px">
+                <span>Entries waiting for your approval</span>
+                <strong>${waiting}</strong>
+            </div>
+            <div class="breakdown-row">
+                <span>Entries approved and posted</span>
+                <strong>${approved}</strong>
+            </div>
+
+            <p style="margin-top:12px">
+                <button type="button" class="btn secondary" data-goto="adjustmentReview">
+                    Open Adjustment Review
+                </button>
+                <button type="button" class="btn secondary" data-act="recon-complete"
+                    ${waiting > 0 || period.reconciliation === "complete" || recon.steps.generated !== "complete" ? "disabled" : ""}>
+                    ${period.reconciliation === "complete" ? "✓ Reconciliation complete" : "Mark reconciliation complete"}
+                </button>
+            </p>
+            ${waiting > 0 ? `<p class="tiny muted">Approve or reject the waiting entries before marking the reconciliation complete.</p>` : ""}
+            ${waiting === 0 && recon.steps.generated !== "complete" && period.reconciliation !== "complete" ? `<p class="tiny muted">Select “Create adjusting entries” first. If nothing needs adjusting, you can then mark the reconciliation complete.</p>` : ""}
+        `;
+    }
+
+
+    // =====================================================
+    // ADJUSTMENT REVIEW
+    // =====================================================
+
+    adjustmentReview() {
+
+        const state = this.state;
+        const period = state.getReportingPeriod();
+
+        const list = state.reviewShowAll || !period
+            ? state.proposals
+            : state.getPeriodProposals(period.id);
+
+        const order = { pending: 0, revise_needed: 0, approved: 1, rejected: 2 };
+
+        const sorted = [...list].sort((a, b) =>
+            (order[a.status] - order[b.status]) ||
+            a.entryDate.localeCompare(b.entryDate)
+        );
+
+        const waiting = list.filter(p => LedgerState.isWaiting(p)).length;
+        const approved = list.filter(p => p.status === "approved").length;
+        const rejected = list.filter(p => p.status === "rejected").length;
+
+        return `
+
+            ${this.heading(
+                "Adjustment Review",
+                "Look over each adjusting entry Ledger proposed. Approve it to post it to your books, revise it, or reject it. Approved entries can never be deleted. A mistake is corrected with a new entry."
+            )}
+
+            <div class="grid metric-grid">
+                ${this.metric("Waiting for approval", waiting, "Not posted yet", "⏳")}
+                ${this.metric("Approved and posted", approved, "In your General Ledger", "✓")}
+                ${this.metric("Rejected", rejected, "Not posted", "✕")}
+            </div>
+
+            <div class="card" style="margin-top:16px">
+                <label>
+                    <input type="checkbox" id="reviewShowAll" ${state.reviewShowAll ? "checked" : ""}>
+                    Show every period
+                </label>
+                <span class="tiny muted">
+                    ${state.reviewShowAll || !period
+                        ? "Showing all periods."
+                        : `Showing ${LedgerUtils.escape(period.label)}. Change the period on the Reporting Periods page.`}
+                </span>
+            </div>
+
+            ${sorted.length
+                ? sorted.map(p => this.adjustmentCard(p)).join("")
+                : `<div class="card" style="margin-top:16px">
+                       <p class="muted">
+                           No adjusting entries yet. Complete the
+                           Reconciliation to create them.
+                       </p>
+                   </div>`}
+        `;
+    }
+
+    adjustmentCard(p) {
+
+        const state = this.state;
+
+        const waitingStatus = LedgerState.isWaiting(p);
+
+        const editing = state.editingProposalId === p.id;
+
+        const closed = p.periodStatus === "closed";
+
+        const labels = {
+            depreciation: "Depreciation",
+            inventory: "Inventory count",
+            inventory_nrv: "Inventory write-down",
+            supplies: "Supplies used",
+            accrual: "Unpaid expense",
+            manual: "Manual"
+        };
+
+        const badge = {
+            pending: `<span class="badge review">WAITING FOR APPROVAL</span>`,
+            revise_needed: `<span class="badge review">NEEDS REVISION</span>`,
+            approved: `<span class="badge approved">POSTED</span>`,
+            rejected: `<span class="badge">REJECTED</span>`
+        }[p.status] || "";
+
+        const amountLocked = [
+            "depreciation", "inventory", "inventory_nrv", "supplies"
+        ].includes(p.source);
+
+        const chartNames = new Set(
+            LedgerUtils.chart.filter(a => a.is_active)
+                .map(a => a.account_name.toLowerCase())
+        );
+
+        const missing = p.lines.some(
+            line => !line.account || !chartNames.has(line.account.toLowerCase())
+        );
+
+        const debitTotal = p.lines.reduce((t, l) => t + l.debit, 0);
+        const creditTotal = p.lines.reduce((t, l) => t + l.credit, 0);
+        const balanced = Math.abs(debitTotal - creditTotal) < 0.005;
+
+        const id = LedgerUtils.escape(p.id);
+
+        const lineRows = p.lines.map((line, index) => {
+
+            const account = line.account && chartNames.has(line.account.toLowerCase())
+                ? LedgerUtils.escape(line.account)
+                : `<span class="negative">Choose an account</span>`;
+
+            if (editing) {
+
+                const amount = line.debit > 0 ? line.debit : line.credit;
+
+                return `
+                    <tr>
+                        <td>
+                            <select data-rv="account" data-i="${index}">
+                                ${LedgerUtils.accountSelectOptions(line.account)}
+                            </select>
+                        </td>
+                        <td colspan="2">
+                            ${line.debit > 0 ? "Debit" : "Credit"}
+                            <input type="number" min="0.01" step="0.01" style="width:120px"
+                                data-rv="amount" data-i="${index}" value="${amount}"
+                                ${amountLocked ? "disabled" : ""}>
+                        </td>
+                    </tr>`;
+            }
+
+            return `
+                <tr>
+                    <td style="${line.credit > 0 ? "padding-left:28px" : ""}">${account}</td>
+                    <td class="amount" style="text-align:right">${line.debit > 0 ? LedgerUtils.peso(line.debit) : ""}</td>
+                    <td class="amount" style="text-align:right">${line.credit > 0 ? LedgerUtils.peso(line.credit) : ""}</td>
+                </tr>`;
+        }).join("");
+
+        const actions = !waitingStatus ? "" : editing ? `
+            <button type="button" class="btn primary small" data-act="review-save" data-id="${id}">Save revision</button>
+            <button type="button" class="btn secondary small" data-act="review-cancel">Cancel</button>
+        ` : `
+            <button type="button" class="btn primary small" data-act="review-approve" data-id="${id}"
+                ${missing || !balanced || closed || p.status === "revise_needed" ? "disabled" : ""}>
+                Approve and post
+            </button>
+            <button type="button" class="btn secondary small" data-act="review-revise" data-id="${id}"
+                ${closed ? "disabled" : ""}>Revise</button>
+            ${p.status === "pending" ? `
+            <button type="button" class="btn ghost small" data-act="review-flag" data-id="${id}">Needs revision</button>` : ""}
+            <button type="button" class="btn ghost small" data-act="review-reject" data-id="${id}">Reject</button>
+        `;
+
+        return `
+            <div class="card" style="margin-top:16px" id="adjustment-${id}">
+
+                <div class="card-head">
+                    <div>
+                        <p class="eyebrow">${LedgerUtils.escape(labels[p.source] || p.source)} · ${LedgerUtils.escape(p.periodLabel)}</p>
+                        ${editing
+                            ? `<input type="text" maxlength="200" id="rvDescription" value="${LedgerUtils.escape(p.description)}" style="width:100%">`
+                            : `<h3 style="margin:0">${LedgerUtils.escape(p.description)}</h3>`}
+                    </div>
+                    ${badge}
+                </div>
+
+                <p class="muted-small">${LedgerUtils.escape(p.reason)}</p>
+
+                <p class="tiny muted">
+                    Entry date:
+                    ${editing
+                        ? `<input type="date" id="rvDate" min="${LedgerUtils.escape(p.periodStart)}" max="${LedgerUtils.escape(p.periodEnd)}" value="${LedgerUtils.escape(p.entryDate)}">`
+                        : LedgerUtils.escape(p.entryDate)}
+                </p>
+
+                <div class="table-wrap">
+                    <table>
+                        <thead><tr>
+                            <th>Account</th>
+                            <th style="text-align:right">Debit</th>
+                            <th style="text-align:right">Credit</th>
+                        </tr></thead>
+                        <tbody>
+                            ${lineRows}
+                            ${editing ? "" : `
+                            <tr style="font-weight:600">
+                                <td>Total</td>
+                                <td class="amount" style="text-align:right">${LedgerUtils.peso(debitTotal)}</td>
+                                <td class="amount" style="text-align:right">${LedgerUtils.peso(creditTotal)}</td>
+                            </tr>`}
+                        </tbody>
+                    </table>
+                </div>
+
+                ${editing && amountLocked ? `<p class="tiny muted">The amounts come from your count or schedule. Change the accounts here, or fix the source and create the entries again.</p>` : ""}
+                ${waitingStatus && missing && !editing ? `<p class="tiny negative">An account is missing from your Chart of Accounts. Choose Revise to pick one.</p>` : ""}
+                ${p.status === "revise_needed" && !editing ? `<p class="tiny muted">Marked as needing revision${p.decisionNote ? ": " + LedgerUtils.escape(p.decisionNote) : ""}. Revise it, then approve.</p>` : ""}
+                ${closed && waitingStatus ? `<p class="tiny muted">This period is closed.</p>` : ""}
+                ${p.status === "approved" ? `<p class="tiny muted">Approved ${LedgerUtils.escape(p.decidedAt)} and posted to your General Ledger.</p>` : ""}
+                ${p.status === "rejected" ? `<p class="tiny muted">Rejected ${LedgerUtils.escape(p.decidedAt)}${p.decisionNote ? ": " + LedgerUtils.escape(p.decisionNote) : ""}.</p>` : ""}
+
+                <div class="modal-actions" style="margin-top:8px">${actions}</div>
+
+            </div>
         `;
     }
 
@@ -7154,6 +9538,14 @@ class LedgerView {
 
             reportingPeriods: () => this.reportingPeriods(),
 
+            reconciliation: () => this.reconciliation(),
+
+            adjustmentReview: () => this.adjustmentReview(),
+
+            yearEndClosing: () => this.yearEndClosing(),
+
+            auditTrail: () => this.auditTrail(),
+
             settings: () => this.settings()
 
         };
@@ -7209,6 +9601,14 @@ class LedgerApp {
             supplies: "Supplies",
 
             reportingPeriods: "Reporting Periods",
+
+            reconciliation: "Reconciliation",
+
+            adjustmentReview: "Adjustment Review",
+
+            yearEndClosing: "Year-End Closing",
+
+            auditTrail: "Audit Trail",
 
             settings: "Settings"
 
@@ -7527,6 +9927,19 @@ class LedgerApp {
 
 
             try {
+                await this.api.loadProposals();
+
+            } catch (error) {
+
+                if (!this.api.getToken()) return;
+
+                LedgerUtils.toast(
+                    "Adjustments could not be loaded: " + error.message,
+                    "error"
+                );
+            }
+
+            try {
                 await this.api.loadReporting();
 
             } catch (error) {
@@ -7535,6 +9948,24 @@ class LedgerApp {
 
                 LedgerUtils.toast(
                     "Reporting periods could not be loaded: " + error.message,
+                    "error"
+                );
+            }
+
+            try {
+                await Promise.all([
+                    this.api.loadAccountClasses(),
+                    this.api.loadSavedReports(),
+                    this.api.loadClosings()
+                ]);
+
+            } catch (error) {
+
+                if (!this.api.getToken()) return;
+
+                LedgerUtils.toast(
+                    "Statement settings and year-end data could not be loaded: " +
+                        error.message,
                     "error"
                 );
             }
@@ -7627,6 +10058,10 @@ class LedgerApp {
 
         // Attach page event listeners
         this.wirePage();
+
+        if (page === "reconciliation") {
+            this.ensureReconciliation();
+        }
 
 
         // Initialize dashboard chart
@@ -7929,6 +10364,8 @@ class LedgerApp {
 
         const date =
             document.getElementById("txDate").value;
+
+        if (this.guardClosedDate(date)) return;
 
         const description =
             document.getElementById("txDescription")
@@ -8551,6 +10988,8 @@ ${errors.length > 10
         const fail = message =>
             LedgerUtils.toast(message, "error");
 
+        if (this.guardClosedDate(date)) return;
+
         if (!date || !description || !debitName || !creditName) {
             return fail("Complete all required fields.");
         }
@@ -8620,6 +11059,8 @@ ${errors.length > 10
             this.state.adjustments.find(item => item.id === String(id));
 
         if (!entry) return;
+
+        if (this.guardClosedDate(entry.date)) return;
 
         const total = entry.lines.reduce(
             (sum, line) => sum + line.debit, 0
@@ -8746,6 +11187,965 @@ ${errors.length > 10
     // FINANCIAL STATEMENTS PERIOD + EXPORT
     // -----------------------------------------------------
 
+    // =====================================================
+    // RECONCILIATION + ADJUSTMENT REVIEW (controller)
+    // =====================================================
+
+    async ensureReconciliation() {
+
+        const period = this.state.getReportingPeriod();
+        const recon = this.state.recon;
+
+        if (!period || recon.periodId === period.id || recon.loading) return;
+
+        recon.loading = true;
+
+        try {
+
+            const data = await this.api.getReconciliation(period.id);
+
+            this.state.recon = {
+                ...LedgerState.emptyRecon(),
+                periodId: period.id,
+                draft: data.draft || {},
+                steps: data.steps || {}
+            };
+
+        } catch (error) {
+
+            recon.loading = false;
+
+            LedgerUtils.toast(error.message, "error");
+
+            return;
+        }
+
+        if (this.state.currentPage === "reconciliation") {
+            this.render("reconciliation");
+        }
+    }
+
+    // Copy whatever is typed on the current step into the saved draft.
+    collectReconDraft() {
+
+        const root = document.getElementById("pageContent");
+
+        if (!root) return;
+
+        const draft = this.state.recon.draft;
+
+        const number = element =>
+            element.value === "" ? null : Number(element.value);
+
+        const byId = (selector, id) =>
+            root.querySelector(`${selector}[data-id="${id}"]`);
+
+        // Step 1 - inventory
+        const actuals = root.querySelectorAll('[data-rc="inv-actual"]');
+
+        if (actuals.length) {
+
+            draft.inventory = draft.inventory || {};
+
+            actuals.forEach(input => {
+
+                const id = input.dataset.id;
+
+                draft.inventory[id] = {
+                    actual: number(input),
+                    status: byId('[data-rc="inv-status"]', id)?.value || "ok",
+                    nrv: number(byId('[data-rc="inv-nrv"]', id) || { value: "" }),
+                    note: byId('[data-rc="inv-note"]', id)?.value.trim() || ""
+                };
+            });
+        }
+
+        // Step 2 - supplies
+        const quantities = root.querySelectorAll('[data-rc="sup-qty"]');
+
+        if (quantities.length) {
+
+            const counts = {};
+
+            quantities.forEach(input => {
+
+                const id = input.dataset.id;
+
+                counts[id] = {
+                    quantity: number(input),
+                    unit_cost: number(byId('[data-rc="sup-cost"]', id) || { value: "" })
+                };
+            });
+
+            draft.supplies = {
+                counts,
+                discarded:
+                    root.querySelector('[data-rc="sup-discarded"]')?.value.trim() || "",
+                purchased:
+                    root.querySelector('[data-rc="sup-purchased"]')?.value.trim() || ""
+            };
+        }
+
+        // Step 3 - assets
+        const reviewed = root.querySelector('[data-rc="assets-reviewed"]');
+
+        if (reviewed) draft.assets_reviewed = reviewed.checked;
+
+        // Step 4 - unpaid expenses
+        if (this.state.recon.step === 4) {
+
+            draft.expenses = [...root.querySelectorAll("[data-rc-row]")]
+                .map(card => {
+
+                    const get = name =>
+                        card.querySelector(`[data-rc="${name}"]`);
+
+                    return {
+                        id: card.dataset.rcRow,
+                        description: get("exp-desc").value.trim(),
+                        amount: number(get("exp-amount")),
+                        date: get("exp-date").value,
+                        debit_account: get("exp-debit").value,
+                        credit_account: get("exp-credit").value,
+                        payment_status: get("exp-status").value,
+                        notes: get("exp-notes").value.trim()
+                    };
+                });
+        }
+    }
+
+    reconStepKey() {
+        return ["inventory", "supplies", "assets", "expenses", "review"][
+            this.state.recon.step - 1
+        ];
+    }
+
+    async saveReconciliation(markStepComplete = false) {
+
+        const period = this.state.getReportingPeriod();
+        const recon = this.state.recon;
+
+        if (!period || recon.periodId !== period.id) return false;
+
+        const answersBefore = JSON.stringify(recon.draft);
+
+        this.collectReconDraft();
+
+        if (
+            recon.steps.generated &&
+            JSON.stringify(recon.draft) !== answersBefore
+        ) {
+            delete recon.steps.generated;
+        }
+
+        const key = this.reconStepKey();
+
+        recon.steps[key] = markStepComplete
+            ? "complete"
+            : recon.steps[key] || "in_progress";
+
+        try {
+
+            await this.api.saveReconciliation(
+                period.id, recon.draft, recon.steps
+            );
+
+            await this.api.loadReporting();
+
+            return true;
+
+        } catch (error) {
+
+            LedgerUtils.toast(error.message, "error");
+
+            return false;
+        }
+    }
+
+    async goToReconStep(step) {
+
+        const recon = this.state.recon;
+
+        if (!await this.saveReconciliation(false)) return;
+
+        recon.step = Math.min(Math.max(step, 1), 5);
+
+        this.render("reconciliation");
+    }
+
+    addReconExpense(preset) {
+
+        this.collectReconDraft();
+
+        const period = this.state.getReportingPeriod();
+
+        const find = (type, pattern) =>
+            LedgerUtils.chart.find(account =>
+                account.is_active &&
+                account.account_type === type &&
+                pattern.test(account.account_name)
+            )?.account_name || "";
+
+        const keywords = {
+            "Electricity bill": /utilit|electric/i,
+            "Water bill": /utilit|water/i,
+            "Internet bill": /utilit|internet|communic/i,
+            "Salaries": /salar|wage/i,
+            "Rent": /rent/i,
+            "Supplier payment": /accounts payable|payable/i,
+            "Interest": /interest/i
+        }[preset];
+
+        const debit = keywords ? find("expense", keywords) : "";
+
+        const credit = keywords
+            ? find("liability", keywords) || find("liability", /accounts payable|payable/i)
+            : find("liability", /accounts payable|payable/i);
+
+        const rows = this.state.recon.draft.expenses || [];
+
+        rows.push({
+            id: window.crypto?.randomUUID
+                ? window.crypto.randomUUID()
+                : String(Date.now()) + Math.random().toString(16).slice(2),
+            description: preset,
+            amount: null,
+            date: period.end > LedgerUtils.today()
+                ? LedgerUtils.today() : period.end,
+            debit_account: debit,
+            credit_account: credit,
+            payment_status: "unpaid",
+            notes: ""
+        });
+
+        this.state.recon.draft.expenses = rows;
+
+        this.render("reconciliation");
+    }
+
+    removeReconExpense(id) {
+
+        this.collectReconDraft();
+
+        this.state.recon.draft.expenses =
+            (this.state.recon.draft.expenses || [])
+                .filter(row => row.id !== id);
+
+        this.render("reconciliation");
+    }
+
+    async refreshAfterPosting() {
+
+        const jobs = [
+            this.api.loadProposals(),
+            this.api.loadAdjustments(),
+            this.api.loadInventory(),
+            this.api.loadSupplies(),
+            this.api.loadFixedAssets(),
+            this.api.loadReporting(),
+            this.api.loadClosings()
+        ];
+
+        const results = await Promise.allSettled(jobs);
+
+        const failed = results.find(r => r.status === "rejected");
+
+        if (failed && this.api.getToken()) {
+            LedgerUtils.toast(
+                "Some data could not be refreshed: " + failed.reason.message,
+                "error"
+            );
+        }
+    }
+
+    async generateAdjustments() {
+
+        const period = this.state.getReportingPeriod();
+        const recon = this.state.recon;
+
+        if (!period) return;
+
+        const waiting = this.state.getPeriodProposals(period.id)
+            .filter(p => LedgerState.isWaiting(p)).length;
+
+        if (
+            waiting > 0 &&
+            !window.confirm(
+                `${waiting} entr${waiting === 1 ? "y is" : "ies are"} still waiting ` +
+                `for approval. Creating the entries again replaces them, ` +
+                `including any you revised. Approved entries are not touched. Continue?`
+            )
+        ) {
+            return;
+        }
+
+        if (!await this.saveReconciliation(true)) return;
+
+        const account = LedgerAccounting.suppliesAccountName();
+
+        try {
+
+            const result = await this.api.generateAdjustments(period.id, {
+                as_of: LedgerUtils.today(),
+                supplies_account: account,
+                book_supplies_balance: LedgerAccounting.accountBalance(
+                    this.state, account, period.end
+                )
+            });
+
+            recon.warnings = result.warnings || [];
+
+            // Remember that the entries were created (even if none were
+            // needed), so the reconciliation can be marked complete.
+            recon.steps.generated = "complete";
+
+            await this.api.saveReconciliation(
+                period.id, recon.draft, recon.steps
+            );
+
+            await this.refreshAfterPosting();
+
+            this.render("reconciliation");
+
+            LedgerUtils.toast(
+                result.created
+                    ? `${result.created} adjusting entr${result.created === 1 ? "y" : "ies"} ready for your review.`
+                    : "No new adjustments are needed.",
+                result.created ? "success" : ""
+            );
+
+        } catch (error) {
+
+            LedgerUtils.toast(error.message, "error");
+        }
+    }
+
+    async completeReconciliation() {
+
+        const period = this.state.getReportingPeriod();
+
+        if (!period) return;
+
+        try {
+
+            await this.api.completeReconciliation(period.id);
+
+            // With every adjustment decided, the adjusted trial balance is
+            // ready if the books balance.
+            const report = LedgerAccounting.adjustedTrialBalance(
+                this.state, period.end
+            );
+
+            if (report.hasRows && report.finalBalanced) {
+                await this.api.setPeriodStatus(
+                    period.id, "adjusted_tb_status", "complete"
+                );
+            }
+
+            await this.api.loadReporting();
+
+            this.render("reconciliation");
+
+            LedgerUtils.toast("Reconciliation complete.", "success");
+
+        } catch (error) {
+
+            LedgerUtils.toast(error.message, "error");
+        }
+    }
+
+    async decideProposal(action, id) {
+
+        const proposal = this.state.proposals.find(p => p.id === id);
+
+        if (!proposal) return;
+
+        try {
+
+            if (action === "approve") {
+
+                if (!window.confirm(
+                    `Post "${proposal.description}" to your books? ` +
+                    `Posted entries cannot be deleted.`
+                )) return;
+
+                await this.api.approveProposal(id);
+
+            } else if (action === "reject") {
+
+                const note = window.prompt(
+                    "Why are you rejecting this entry? (optional)", ""
+                );
+
+                if (note === null) return;
+
+                await this.api.rejectProposal(id, note);
+
+            } else if (action === "flag") {
+
+                const note = window.prompt(
+                    "What needs to change? (optional)", ""
+                );
+
+                if (note === null) return;
+
+                await this.api.flagProposal(id, note);
+            }
+
+            await this.refreshAfterPosting();
+
+            this.render("adjustmentReview");
+
+            LedgerUtils.toast(
+                action === "approve" ? "Entry approved and posted." : "Entry updated.",
+                "success"
+            );
+
+        } catch (error) {
+
+            LedgerUtils.toast(error.message, "error");
+
+            // The record may have changed; show the latest.
+            await this.refreshAfterPosting();
+            this.render("adjustmentReview");
+        }
+    }
+
+    async saveProposalRevision(id) {
+
+        const proposal = this.state.proposals.find(p => p.id === id);
+
+        if (!proposal) return;
+
+        const root = document.getElementById("adjustment-" + id);
+
+        const lines = proposal.lines.map((line, index) => {
+
+            const account = root.querySelector(
+                `[data-rv="account"][data-i="${index}"]`
+            )?.value || "";
+
+            const amount = Number(
+                root.querySelector(`[data-rv="amount"][data-i="${index}"]`)?.value
+            ) || 0;
+
+            return {
+                account_name: account,
+                debit: line.debit > 0 ? amount : 0,
+                credit: line.credit > 0 ? amount : 0
+            };
+        });
+
+        try {
+
+            await this.api.reviseProposal(id, {
+                description: root.querySelector("#rvDescription").value,
+                entry_date: root.querySelector("#rvDate").value,
+                lines
+            });
+
+            this.state.editingProposalId = null;
+
+            await this.api.loadProposals();
+
+            this.render("adjustmentReview");
+
+            LedgerUtils.toast("Entry revised.", "success");
+
+        } catch (error) {
+
+            LedgerUtils.toast(error.message, "error");
+        }
+    }
+
+    // -----------------------------------------------------
+    // STATEMENT REPORTS + ACCOUNT GROUPS
+    // -----------------------------------------------------
+
+    statementSnapshot(start, end) {
+
+        const fs = LedgerAccounting.financialStatements(this.state, start, end);
+        const cash = LedgerAccounting.cashFlowStatement(this.state, start, end);
+
+        return {
+            startDate: start,
+            endDate: end,
+            income: fs.incomeRows,
+            equity: fs.equityRows,
+            balance: fs.balanceRows,
+            cash: cash.rows,
+            netIncome: fs.netIncome,
+            totalAssets: fs.totalAssets,
+            totalLiabilities: fs.totalLiabilities,
+            totalEquity: fs.totalEquity,
+            savedAt: new Date().toISOString()
+        };
+    }
+
+    async saveStatementReport() {
+
+        const start = this.state.statementStart;
+        const end = this.state.statementEnd;
+
+        const trial = LedgerAccounting.adjustedTrialBalance(this.state, end);
+
+        if (trial.hasRows && !trial.finalBalanced) {
+
+            LedgerUtils.toast(
+                "The adjusted trial balance does not balance, so the report cannot be saved.",
+                "error"
+            );
+
+            return;
+        }
+
+        const today = LedgerUtils.today();
+
+        const period = this.state.reporting.periods.find(p =>
+            p.start === start &&
+            (p.end === end || (p.end > today && end === today))
+        );
+
+        try {
+
+            await this.api.saveReportSnapshot({
+                title: period
+                    ? `${period.label} financial statements`
+                    : `Financial statements ${start} to ${end}`,
+                start_date: start,
+                end_date: end,
+                period_id: period ? period.id : undefined,
+                data: this.statementSnapshot(start, end)
+            });
+
+            await Promise.all([
+                this.api.loadSavedReports(),
+                this.api.loadReporting()
+            ]);
+
+            LedgerUtils.toast("Report saved.", "success");
+
+            this.render("financialStatements");
+
+        } catch (error) {
+
+            LedgerUtils.toast(error.message, "error");
+        }
+    }
+
+    async saveAccountGroups() {
+
+        const changes = [];
+
+        document.querySelectorAll("[data-class-account]").forEach(select => {
+
+            const name = select.dataset.classAccount;
+
+            const saved =
+                this.state.accountClasses.get(name.toLowerCase()) || "";
+
+            if (select.value !== saved) {
+                changes.push({ account_name: name, class: select.value });
+            }
+        });
+
+        if (!changes.length) {
+            LedgerUtils.toast("No changes to save.", "success");
+            return;
+        }
+
+        try {
+
+            await this.api.saveAccountClasses(changes);
+
+            LedgerUtils.toast("Account groups saved.", "success");
+
+            this.render("financialStatements");
+
+        } catch (error) {
+
+            LedgerUtils.toast(error.message, "error");
+        }
+    }
+
+    async viewSavedReport(id) {
+
+        try {
+
+            const data = await this.api.request(
+                `/statements/reports/${encodeURIComponent(id)}`
+            );
+
+            this.state.viewedReport = data.report;
+
+            this.render("financialStatements");
+
+        } catch (error) {
+
+            LedgerUtils.toast(error.message, "error");
+        }
+    }
+
+    // -----------------------------------------------------
+    // YEAR-END CLOSING ACTIONS
+    // -----------------------------------------------------
+
+    async refreshClosingChecks() {
+
+        const c = this.state.closing;
+        const fy = this.state.getClosingYear();
+
+        if (!fy || c.busy) return;
+
+        c.busy = true;
+
+        try {
+            c.checks = await this.api.loadClosingChecks(fy.start);
+        } catch (error) {
+            c.checks = { error: error.message };
+        }
+
+        c.busy = false;
+
+        if (this.state.currentPage === "yearEndClosing") {
+            this.render("yearEndClosing");
+        }
+    }
+
+    selectClosingYear(start) {
+
+        const c = this.state.closing;
+
+        c.fy = start;
+        c.step = 1;
+        c.checks = null;
+
+        this.render("yearEndClosing");
+    }
+
+    goToClosingStep(step) {
+
+        const c = this.state.closing;
+        const fy = this.state.getClosingYear();
+
+        c.step = Math.min(6, Math.max(1, step));
+
+        if (fy && this.state.getYearClosing(fy.start)?.status !== "complete") {
+            c.steps[`step${c.step}`] = true;
+            this.api.saveClosingSteps(fy.start, c.steps).catch(() => {});
+        }
+
+        this.render("yearEndClosing");
+    }
+
+    async postYearEndClosing() {
+
+        const c = this.state.closing;
+        const fy = this.state.getClosingYear();
+
+        if (!fy || c.busy) return;
+
+        if (!document.getElementById("closingConfirm")?.checked) {
+            LedgerUtils.toast(
+                "Tick the box to confirm you understand the year will be locked.",
+                "error"
+            );
+            return;
+        }
+
+        if (c.checks && c.checks.checks) {
+
+            const failed = c.checks.checks.find(k => !k.ok);
+
+            if (failed) {
+                LedgerUtils.toast(failed.message, "error");
+                c.step = 1;
+                this.render("yearEndClosing");
+                return;
+            }
+        }
+
+        const atb = LedgerAccounting.adjustedTrialBalance(this.state, fy.end);
+
+        if (atb.hasRows && !atb.finalBalanced) {
+            LedgerUtils.toast(
+                "The adjusted trial balance does not balance. Fix it before closing.",
+                "error"
+            );
+            return;
+        }
+
+        const plan = LedgerAccounting.closingPlan(this.state, fy.start, fy.end);
+
+        if (plan.error) {
+            LedgerUtils.toast(plan.error, "error");
+            return;
+        }
+
+        const pct = LedgerAccounting.postClosingTrialBalance(this.state, plan);
+
+        if (!pct.balanced || !pct.temporaryClosed) {
+            LedgerUtils.toast(
+                "The post-closing balances are not right, so the year was not closed.",
+                "error"
+            );
+            return;
+        }
+
+        c.busy = true;
+        this.render("yearEndClosing");
+
+        try {
+
+            await this.api.closeYear(fy.start, {
+                entries: plan.entries.map(entry => ({
+                    description: entry.description,
+                    lines: entry.lines.map(l => ({
+                        account: l.account, debit: l.debit, credit: l.credit
+                    }))
+                })),
+                opening_balances: pct.rows.map(r => ({
+                    account: r.account, debit: r.debit, credit: r.credit
+                })),
+                net_income: plan.netIncome,
+                report: {
+                    title: `Annual financial statements ${fy.start} to ${fy.end}`,
+                    data: this.statementSnapshot(fy.start, fy.end)
+                }
+            });
+
+            await Promise.all([
+                this.api.loadAdjustments(),
+                this.api.loadClosings(),
+                this.api.loadReporting(),
+                this.api.loadSavedReports()
+            ]);
+
+            c.step = 6;
+            c.checks = null;
+
+            LedgerUtils.toast("The year is closed.", "success");
+
+        } catch (error) {
+
+            LedgerUtils.toast(error.message, "error");
+        }
+
+        c.busy = false;
+
+        this.render("yearEndClosing");
+    }
+
+    async reopenYearEnd(id) {
+
+        const reason = document.getElementById("reopenReason")?.value.trim();
+        const confirm = document.getElementById("reopenConfirm")?.value.trim();
+
+        if (!reason) {
+            LedgerUtils.toast("Enter a reason for reopening.", "error");
+            return;
+        }
+
+        if (confirm !== "REOPEN") {
+            LedgerUtils.toast("Type REOPEN to confirm.", "error");
+            return;
+        }
+
+        const c = this.state.closing;
+
+        try {
+
+            await this.api.reopenYear(id, { reason, confirm });
+
+            await Promise.all([
+                this.api.loadAdjustments(),
+                this.api.loadClosings(),
+                this.api.loadReporting()
+            ]);
+
+            c.step = 1;
+            c.checks = null;
+
+            LedgerUtils.toast(
+                "The year is reopened. The closing entries were reversed.",
+                "success"
+            );
+
+        } catch (error) {
+
+            LedgerUtils.toast(error.message, "error");
+        }
+
+        this.render("yearEndClosing");
+    }
+
+    // True (and a friendly message) when a date falls in a closed year.
+    guardClosedDate(...dates) {
+
+        const closed = this.state.closedThrough();
+
+        if (!closed) return false;
+
+        if (!dates.some(date => date && date <= closed)) return false;
+
+        LedgerUtils.toast(
+            `The fiscal year ending ${closed} is closed, so nothing dated on or before that day can be added, changed or deleted. ` +
+            `To make a correction, reopen the year on the Year-End Closing page.`,
+            "error"
+        );
+
+        return true;
+    }
+
+    wireAyecas() {
+
+        document.getElementById("reconPeriodSelect")
+            ?.addEventListener("change", event => {
+                this.state.reporting.selectedStart = event.target.value;
+                this.render("reconciliation");
+            });
+
+        document.getElementById("closingYearSelect")
+            ?.addEventListener("change", event => {
+                this.selectClosingYear(event.target.value);
+            });
+
+        if (
+            document.getElementById("auditList") &&
+            Date.now() - (this.state.auditLoadedAt || 0) > 3000
+        ) {
+            this.state.auditLoadedAt = Date.now();
+            this.api.loadAuditEvents()
+                .catch(error => {
+                    this.state.auditEvents = [];
+                    LedgerUtils.toast(error.message, "error");
+                })
+                .then(() => {
+                    if (this.state.currentPage === "auditTrail") {
+                        this.render("auditTrail");
+                    }
+                });
+        }
+
+        if (
+            document.getElementById("closingNeedsChecks") &&
+            !this.state.closing.busy
+        ) {
+            this.refreshClosingChecks();
+        }
+
+        document.getElementById("reviewShowAll")
+            ?.addEventListener("change", event => {
+                this.state.reviewShowAll = event.target.checked;
+                this.render("adjustmentReview");
+            });
+
+        document.querySelectorAll("[data-act]").forEach(element => {
+
+            element.addEventListener("click", () => {
+
+                const id = element.dataset.id;
+
+                switch (element.dataset.act) {
+
+                    case "recon-step":
+                        this.goToReconStep(Number(element.dataset.step));
+                        break;
+
+                    case "recon-prev":
+                        this.goToReconStep(this.state.recon.step - 1);
+                        break;
+
+                    case "recon-next":
+                        this.saveReconciliation(true).then(saved => {
+                            if (!saved) return;
+                            this.state.recon.step =
+                                Math.min(this.state.recon.step + 1, 5);
+                            this.render("reconciliation");
+                        });
+                        break;
+
+                    case "recon-save":
+                        this.saveReconciliation(false).then(saved => {
+                            if (saved) LedgerUtils.toast("Progress saved.", "success");
+                        });
+                        break;
+
+                    case "recon-add-expense":
+                        this.addReconExpense(element.dataset.preset);
+                        break;
+
+                    case "recon-remove-expense":
+                        this.removeReconExpense(id);
+                        break;
+
+                    case "recon-generate":
+                        this.generateAdjustments();
+                        break;
+
+                    case "recon-complete":
+                        this.completeReconciliation();
+                        break;
+
+                    case "review-approve":
+                        this.decideProposal("approve", id);
+                        break;
+
+                    case "save-report":
+                        this.saveStatementReport();
+                        break;
+
+                    case "classes-save":
+                        this.saveAccountGroups();
+                        break;
+
+                    case "report-view":
+                        this.viewSavedReport(id);
+                        break;
+
+                    case "close-step":
+                        this.goToClosingStep(Number(element.dataset.step));
+                        break;
+
+                    case "close-recheck":
+                        this.refreshClosingChecks();
+                        break;
+
+                    case "close-post":
+                        this.postYearEndClosing();
+                        break;
+
+                    case "close-reopen":
+                        this.reopenYearEnd(id);
+                        break;
+
+                    case "review-reject":
+                        this.decideProposal("reject", id);
+                        break;
+
+                    case "review-flag":
+                        this.decideProposal("flag", id);
+                        break;
+
+                    case "review-revise":
+                        this.state.editingProposalId = id;
+                        this.render("adjustmentReview");
+                        break;
+
+                    case "review-cancel":
+                        this.state.editingProposalId = null;
+                        this.render("adjustmentReview");
+                        break;
+
+                    case "review-save":
+                        this.saveProposalRevision(id);
+                        break;
+                }
+            });
+        });
+    }
+
+
     // -----------------------------------------------------
     // REPORTING PERIODS
     // -----------------------------------------------------
@@ -8849,6 +12249,20 @@ ${errors.length > 10
 
     exportStatementsCSV() {
 
+        const trial = LedgerAccounting.adjustedTrialBalance(
+            this.state, this.state.statementEnd
+        );
+
+        if (trial.hasRows && !trial.finalBalanced) {
+
+            LedgerUtils.toast(
+                "The adjusted trial balance does not balance, so the statements cannot be exported.",
+                "error"
+            );
+
+            return;
+        }
+
         const report = LedgerAccounting.financialStatements(
             this.state,
             this.state.statementStart,
@@ -8865,7 +12279,7 @@ ${errors.length > 10
                 rows.push([
                     "",
                     row.label,
-                    row.kind === "section"
+                    row.kind === "section" || row.kind === "subsection"
                         ? ""
                         : row.amount.toFixed(2)
                 ]);
@@ -8890,6 +12304,13 @@ ${errors.length > 10
         addStatement(
             "Balance Sheet", `As of ${report.endDate}`,
             report.balanceRows
+        );
+
+        addStatement(
+            "Statement of Cash Flows", `For the period ${period}`,
+            LedgerAccounting.cashFlowStatement(
+                this.state, report.startDate, report.endDate
+            ).rows
         );
 
         const csv = [["Statement", "Line", "Amount"], ...rows]
@@ -9124,6 +12545,11 @@ ${errors.length > 10
 
         const details =
             this.captureTransactionDetails(id);
+
+        if (this.guardClosedDate(
+            details.date,
+            this.state.getTransaction(id)?.date
+        )) return;
 
 
         if (!lines.length) {
@@ -9834,6 +13260,8 @@ ${errors.length > 10
 
         if (!transaction) return;
 
+        if (this.guardClosedDate(transaction.date)) return;
+
         const confirmed = window.confirm(
             `Delete this transaction?\n\n` +
             `${transaction.date} · ${transaction.description} · ` +
@@ -10206,6 +13634,9 @@ ${errors.length > 10
 
         // Fixed assets + supplies registers
         this.wireRegisters();
+
+        // Reconciliation wizard + adjustment review
+        this.wireAyecas();
 
 
         // Chart of accounts + journal account pickers

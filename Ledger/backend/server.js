@@ -68,6 +68,12 @@ app.use("/api/reporting", reportingRoutes);
 app.use('/api/fixed-assets', require('./routes/fixedAssets'));
 app.use('/api/supplies', require('./routes/supplies'));
 
+// Phase 3–4: Reconciliation and Adjustment Review
+app.use("/api/reconciliation", require("./routes/reconciliation"));
+app.use("/api/period-adjustments", require("./routes/periodAdjustments"));
+
+app.use("/api/statements", require("./routes/statements"));
+app.use("/api/closing", require("./routes/closing"));
 
 
 /* =====================================
