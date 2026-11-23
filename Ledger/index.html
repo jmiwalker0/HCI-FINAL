@@ -24,6 +24,20 @@
   <link rel="stylesheet" href="css/journal-entries.css">
 
   <link rel="stylesheet" href="css/chart-of-accounts.css">
+  <style>
+    .nav-group { margin-top: 6px; }
+    .nav-group-title {
+      display: flex; width: 100%; align-items: center; justify-content: space-between;
+      background: none; border: 0; cursor: pointer; font: inherit;
+      font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+      color: inherit; opacity: .6; padding: 10px 14px 4px;
+    }
+    .nav-group-title:hover { opacity: .9; }
+    .nav-chevron { transition: transform .15s; font-size: 10px; }
+    .nav-group.open .nav-chevron { transform: rotate(90deg); }
+    .nav-group-items { display: none; }
+    .nav-group.open .nav-group-items { display: block; }
+  </style>
 </head>
 
 <body>
@@ -158,6 +172,11 @@
           Dashboard
         </button>
 
+        <div class="nav-group open" data-group="everyday">
+          <button type="button" class="nav-group-title" data-group-toggle="everyday" aria-expanded="true">
+            <span>Everyday</span><span class="nav-chevron">▸</span>
+          </button>
+          <div class="nav-group-items">
         <button
           class="nav-item"
           data-page="transactions"
@@ -166,6 +185,60 @@
           Transactions
         </button>
 
+        <button
+          class="nav-item"
+          data-page="receipts"
+        >
+          <span class="nav-icon">▧</span>
+          Receipts
+        </button>
+          </div>
+        </div>
+
+        <div class="nav-group" data-group="records">
+          <button type="button" class="nav-group-title" data-group-toggle="records" aria-expanded="false">
+            <span>Records</span><span class="nav-chevron">▸</span>
+          </button>
+          <div class="nav-group-items">
+        <button
+          class="nav-item"
+          data-page="inventory"
+        >
+          <span class="nav-icon">▣</span>
+          Inventory
+        </button>
+
+        <button
+          class="nav-item"
+          data-page="fixedAssets"
+        >
+          <span class="nav-icon">▨</span>
+          Fixed Assets
+        </button>
+
+        <button
+          class="nav-item"
+          data-page="supplies"
+        >
+          <span class="nav-icon">▩</span>
+          Supplies
+        </button>
+
+        <button
+          class="nav-item"
+          data-page="chartOfAccounts"
+        >
+          <span class="nav-icon">☷</span>
+          Chart of Accounts
+        </button>
+          </div>
+        </div>
+
+        <div class="nav-group" data-group="accounting">
+          <button type="button" class="nav-group-title" data-group-toggle="accounting" aria-expanded="false">
+            <span>Accounting</span><span class="nav-chevron">▸</span>
+          </button>
+          <div class="nav-group-items">
         <button
           class="nav-item"
           data-page="journal"
@@ -180,14 +253,6 @@
         >
           <span class="nav-icon">▥</span>
           General Ledger
-        </button>
-
-        <button
-          class="nav-item"
-          data-page="chartOfAccounts"
-        >
-          <span class="nav-icon">☷</span>
-          Chart of Accounts
         </button>
 
         <button
@@ -212,6 +277,21 @@
         >
           <span class="nav-icon">＝</span>
           Adjusted Trial Balance
+        </button>
+          </div>
+        </div>
+
+        <div class="nav-group open" data-group="periodend">
+          <button type="button" class="nav-group-title" data-group-toggle="periodend" aria-expanded="true">
+            <span>Period-End</span><span class="nav-chevron">▸</span>
+          </button>
+          <div class="nav-group-items">
+        <button
+          class="nav-item"
+          data-page="periodEnd"
+        >
+          <span class="nav-icon">➜</span>
+          Period-End Guide
         </button>
 
         <button
@@ -261,38 +341,8 @@
           <span class="nav-icon">☰</span>
           Audit Trail
         </button>
-
-        <button
-          class="nav-item"
-          data-page="inventory"
-        >
-          <span class="nav-icon">▣</span>
-          Inventory
-        </button>
-
-        <button
-          class="nav-item"
-          data-page="fixedAssets"
-        >
-          <span class="nav-icon">▨</span>
-          Fixed Assets
-        </button>
-
-        <button
-          class="nav-item"
-          data-page="supplies"
-        >
-          <span class="nav-icon">▩</span>
-          Supplies
-        </button>
-
-        <button
-          class="nav-item"
-          data-page="receipts"
-        >
-          <span class="nav-icon">▧</span>
-          Receipts
-        </button>
+          </div>
+        </div>
 
       </nav>
 

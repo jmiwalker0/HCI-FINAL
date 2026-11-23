@@ -6313,6 +6313,144 @@ class LedgerView {
             </div>`;
     }
 
+    // -----------------------------------------------------
+    // PERIOD-END GUIDE: one page that shows the order of the steps
+    // -----------------------------------------------------
+
+    periodEnd() {
+
+        const state = this.state;
+        const e = LedgerUtils.escape;
+        const period = state.getReportingPeriod();
+
+        const head = this.heading(
+            "Period-End Guide",
+            "Follow these steps in order to finish a reporting period. Ledger shows where you are."
+        );
+
+        if (!period) {
+            return head + `
+                <div class="card">
+                    <p>Choose how often you report first.
+                        <button class="btn secondary" type="button"
+                            data-goto="reportingPeriods">Reporting Periods</button>
+                    </p>
+                </div>`;
+        }
+
+        const today = LedgerUtils.today();
+        const asOf = period.end > today ? today : period.end;
+
+        const waiting = state.proposals.filter(p =>
+            p.periodId === period.id &&
+            ["pending", "revise_needed"].includes(p.status)
+        ).length;
+
+        const atb = LedgerAccounting.adjustedTrialBalance(state, asOf);
+
+        const yearPeriods = state.reporting.periods.filter(
+            p => p.fiscalYearStart === period.fiscalYearStart
+        );
+
+        const lastOfYear = yearPeriods.reduce(
+            (a, b) => (b.end > a.end ? b : a), yearPeriods[0] || period
+        );
+
+        const isLast = lastOfYear.id === period.id;
+        const yearClosed =
+            state.getYearClosing(period.fiscalYearStart)?.status === "complete";
+
+        const reconDone = period.reconciliation === "complete";
+
+        const steps = [
+            {
+                title: "Reconcile your records",
+                text: "Count inventory and supplies, review fixed assets and record unpaid expenses.",
+                state: reconDone ? "done" : period.reconciliation === "in_progress" ? "doing" : "todo",
+                note: reconDone ? "Reconciliation is complete." : "Not finished yet.",
+                button: ["Open Reconciliation", `data-goto="reconciliation"`]
+            },
+            {
+                title: "Approve the proposed adjustments",
+                text: "Each adjustment Ledger proposes must be approved or rejected before you continue.",
+                state: !reconDone ? "todo" : waiting ? "doing" : "done",
+                note: waiting ? `${waiting} waiting for your decision.` : reconDone ? "Nothing is waiting." : "Appears after the reconciliation.",
+                button: ["Open Adjustment Review", `data-goto="adjustmentReview"`]
+            },
+            {
+                title: "Check the adjusted trial balance",
+                text: "Total debits must equal total credits.",
+                state: !atb.hasRows ? "todo" : atb.finalBalanced ? "done" : "problem",
+                note: !atb.hasRows ? "No entries yet." : atb.finalBalanced ? "It balances." : "It does NOT balance. Fix this before the statements.",
+                button: ["Open Adjusted Trial Balance", `data-goto="adjustedTrialBalance"`]
+            },
+            {
+                title: "Review and save the financial statements",
+                text: "Income statement, owner's equity, balance sheet and cash flows. Save a copy to keep.",
+                state: period.statements === "complete" ? "done" : "todo",
+                note: period.statements === "complete" ? "A copy is saved." : "Not saved yet.",
+                button: ["Open Financial Statements", `data-act="guide-statements"`]
+            },
+            {
+                title: "Close the year",
+                text: isLast
+                    ? "This is the last period of the fiscal year, so you can close the year."
+                    : `Year-end closing happens after ${lastOfYear.label}.`,
+                state: yearClosed ? "done" : !isLast ? "na" : "todo",
+                note: yearClosed ? "The year is closed." : !isLast ? "Not needed for this period." : "Not closed yet.",
+                button: isLast || yearClosed
+                    ? ["Open Year-End Closing", `data-goto="yearEndClosing"`] : null
+            }
+        ];
+
+        const counted = steps.filter(x => x.state !== "na");
+        const done = counted.filter(x => x.state === "done").length;
+        const percent = Math.round(done / counted.length * 100);
+        const nextIndex = steps.findIndex(x => ["todo", "doing", "problem"].includes(x.state));
+
+        const badge = {
+            done: ["✓ Done", "positive"],
+            doing: ["In progress", ""],
+            todo: ["To do", "muted"],
+            problem: ["Needs attention", "negative"],
+            na: ["Not needed", "muted"]
+        };
+
+        return `
+            ${head}
+            <div class="card trial-balance-filter">
+                <label for="guidePeriodSelect">
+                    <span class="trial-balance-filter-label">REPORTING PERIOD</span>
+                    <select id="guidePeriodSelect">
+                        ${[...state.reporting.periods].reverse().map(p => `
+                            <option value="${e(p.start)}" ${p.start === period.start ? "selected" : ""}>
+                                ${e(p.label)} (${e(p.start)} to ${e(p.end)})
+                            </option>`).join("")}
+                    </select>
+                </label>
+                <div class="trial-balance-date-note">
+                    <strong>${done} of ${counted.length} steps done</strong>
+                    <div style="height:8px;border-radius:4px;background:rgba(128,128,128,.25);margin-top:6px;overflow:hidden">
+                        <div style="height:100%;width:${percent}%;background:currentColor;opacity:.7"></div>
+                    </div>
+                </div>
+            </div>
+            ${steps.map((step, i) => `
+                <div class="card" style="margin-top:12px;${i === nextIndex ? "outline:2px solid currentColor;" : ""}${step.state === "na" ? "opacity:.6;" : ""}">
+                    <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap">
+                        <h3 style="margin:0">${i + 1}. ${step.title}</h3>
+                        <strong class="${badge[step.state][1]}">${badge[step.state][0]}</strong>
+                    </div>
+                    <p class="tiny muted" style="margin:6px 0">${step.text}</p>
+                    <p class="tiny">${e(step.note)}</p>
+                    ${step.button ? `
+                    <button class="btn ${i === nextIndex ? "" : "secondary"}" type="button" ${step.button[1]}>
+                        ${i === nextIndex ? "Next: " : ""}${step.button[0]}
+                    </button>` : ""}
+                </div>`).join("")}
+        `;
+    }
+
     auditTrail() {
 
         const e = LedgerUtils.escape;
@@ -9546,6 +9684,8 @@ class LedgerView {
 
             auditTrail: () => this.auditTrail(),
 
+            periodEnd: () => this.periodEnd(),
+
             settings: () => this.settings()
 
         };
@@ -9609,6 +9749,8 @@ class LedgerApp {
             yearEndClosing: "Year-End Closing",
 
             auditTrail: "Audit Trail",
+
+            periodEnd: "Period-End Guide",
 
             settings: "Settings"
 
@@ -10048,6 +10190,13 @@ class LedgerApp {
                 button.dataset.page === page
             );
 
+            // keep the group of the open page expanded
+            if (button.dataset.page === page) {
+
+                const group = button.closest(".nav-group");
+
+                if (group) this.setNavGroup(group, true);
+            }
         });
 
 
@@ -11979,6 +12128,30 @@ ${errors.length > 10
         this.render("yearEndClosing");
     }
 
+    setNavGroup(group, open, remember = true) {
+
+        group.classList.toggle("open", open);
+
+        group.querySelector("[data-group-toggle]")
+            ?.setAttribute("aria-expanded", String(open));
+
+        if (!remember) return;
+
+        try {
+
+            const saved = JSON.parse(
+                localStorage.getItem("ledger-nav-groups") || "{}"
+            );
+
+            saved[group.dataset.group] = open;
+
+            localStorage.setItem("ledger-nav-groups", JSON.stringify(saved));
+
+        } catch (error) {
+            // storage unavailable: the groups still work this session
+        }
+    }
+
     // True (and a friendly message) when a date falls in a closed year.
     guardClosedDate(...dates) {
 
@@ -12003,6 +12176,12 @@ ${errors.length > 10
             ?.addEventListener("change", event => {
                 this.state.reporting.selectedStart = event.target.value;
                 this.render("reconciliation");
+            });
+
+        document.getElementById("guidePeriodSelect")
+            ?.addEventListener("change", event => {
+                this.state.reporting.selectedStart = event.target.value;
+                this.render("periodEnd");
             });
 
         document.getElementById("closingYearSelect")
@@ -12089,6 +12268,10 @@ ${errors.length > 10
 
                     case "review-approve":
                         this.decideProposal("approve", id);
+                        break;
+
+                    case "guide-statements":
+                        this.useReportingPeriodForStatements();
                         break;
 
                     case "save-report":
@@ -13976,6 +14159,35 @@ ${errors.length > 10
 
             });
 
+
+        // Sidebar groups (remember what was opened)
+        let savedGroups = null;
+
+        try {
+            savedGroups = JSON.parse(
+                localStorage.getItem("ledger-nav-groups") || "null"
+            );
+        } catch (error) {
+            savedGroups = null;
+        }
+
+        document.querySelectorAll(".nav-group").forEach(group => {
+
+            if (savedGroups && group.dataset.group in savedGroups) {
+                this.setNavGroup(group, !!savedGroups[group.dataset.group], false);
+            }
+        });
+
+        document.querySelectorAll("[data-group-toggle]")
+            .forEach(button => {
+
+                button.addEventListener("click", () => {
+
+                    const group = button.closest(".nav-group");
+
+                    this.setNavGroup(group, !group.classList.contains("open"));
+                });
+            });
 
         // Main navigation
         document.querySelectorAll(".nav-item[data-page]")
