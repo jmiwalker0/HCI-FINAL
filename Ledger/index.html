@@ -5,7 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#172554">
 
-  <title>Ledger — Accounting Assistant</title>
+  <title>LARP — Lucid Accounting Record Program</title>
+  <link rel="icon" type="image/png" href="images/larp-favicon.png">
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -25,12 +26,14 @@
 
   <link rel="stylesheet" href="css/chart-of-accounts.css">
   <style>
+    .brand-logo { display: block; width: 100%; max-width: 168px; height: auto; }
+    .auth-brand .brand-logo { max-width: 230px; margin: 0 auto; }
     .nav-group { margin-top: 6px; }
     .nav-group-title {
       display: flex; width: 100%; align-items: center; justify-content: space-between;
       background: none; border: 0; cursor: pointer; font: inherit;
       font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
-      color: inherit; opacity: .6; padding: 10px 14px 4px;
+      color: #70749A; padding: 10px 14px 4px;
     }
     .nav-group-title:hover { opacity: .9; }
     .nav-chevron { transition: transform .15s; font-size: 10px; }
@@ -51,8 +54,8 @@
     <div class="auth-card">
 
       <div class="brand auth-brand">
-        <span class="brand-mark">L</span>
-        <span>Ledger</span>
+        <img class="brand-logo" src="images/larp-logo.png"
+             alt="LARP — Lucid Accounting Record Program">
       </div>
 
       <h1 id="authTitle">Welcome back</h1>
@@ -146,10 +149,10 @@
       <a
         class="brand"
         href="#"
-        aria-label="Ledger home"
+        aria-label="LARP home"
       >
-        <span class="brand-mark">L</span>
-        <span>Ledger</span>
+        <img class="brand-logo" src="images/larp-logo.png"
+             alt="LARP — Lucid Accounting Record Program">
       </a>
 
       <div class="workspace-label">
@@ -281,43 +284,6 @@
           </div>
         </div>
 
-        <div class="nav-group open" data-group="periodend">
-          <button type="button" class="nav-group-title" data-group-toggle="periodend" aria-expanded="true">
-            <span>Period-End</span><span class="nav-chevron">▸</span>
-          </button>
-          <div class="nav-group-items">
-        <button
-          class="nav-item"
-          data-page="periodEnd"
-        >
-          <span class="nav-icon">➜</span>
-          Period-End Guide
-        </button>
-
-        <button
-          class="nav-item"
-          data-page="reportingPeriods"
-        >
-          <span class="nav-icon">▤</span>
-          Reporting Periods
-        </button>
-
-        <button
-          class="nav-item"
-          data-page="reconciliation"
-        >
-          <span class="nav-icon">✓</span>
-          Reconciliation
-        </button>
-
-        <button
-          class="nav-item"
-          data-page="adjustmentReview"
-        >
-          <span class="nav-icon">✎</span>
-          Adjustment Review
-        </button>
-
         <button
           class="nav-item"
           data-page="financialStatements"
@@ -325,24 +291,6 @@
           <span class="nav-icon">▦</span>
           Financial Statements
         </button>
-
-        <button
-          class="nav-item"
-          data-page="yearEndClosing"
-        >
-          <span class="nav-icon">🔒</span>
-          Year-End Closing
-        </button>
-
-        <button
-          class="nav-item"
-          data-page="auditTrail"
-        >
-          <span class="nav-icon">☰</span>
-          Audit Trail
-        </button>
-          </div>
-        </div>
 
       </nav>
 
@@ -492,7 +440,7 @@
         <div>
 
           <p class="eyebrow">
-            LEDGER WORKSPACE
+            LARP WORKSPACE
           </p>
 
           <h2 id="modalTitle">
@@ -689,7 +637,7 @@
         <!-- FORM INFORMATION -->
 
         <p class="form-note">
-          Ledger will prepare a suggested journal entry.
+          LARP will prepare a suggested journal entry.
           You can review and edit it before approval.
         </p>
 

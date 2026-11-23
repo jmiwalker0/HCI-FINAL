@@ -1,6 +1,5 @@
-
 /* =========================================================
-   LEDGER — DASHBOARD CHART STYLES
+   LARP — DASHBOARD CHART STYLES
    ========================================================= */
 
 
@@ -66,10 +65,10 @@
 }
 
 .chart-toolbar select:focus {
-    border-color: #16a34a;
+    border-color: #3a4a8f;
 
     box-shadow:
-        0 0 0 3px rgba(22, 163, 74, 0.10);
+        0 0 0 3px rgba(58, 74, 143, 0.12);
 }
 
 

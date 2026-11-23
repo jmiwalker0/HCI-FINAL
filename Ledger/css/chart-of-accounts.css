@@ -1,5 +1,5 @@
 /* =========================================================
-   LEDGER — CHART OF ACCOUNTS
+   LARP — CHART OF ACCOUNTS
    Uses the variables and patterns from style.css
    ========================================================= */
 
@@ -77,8 +77,8 @@
 .coa-form input:focus,
 .coa-form select:focus,
 .coa-input:focus {
-    border-color: #93c5fd;
-    box-shadow: 0 0 0 3px #dbeafe;
+    border-color: #9aa3d1;
+    box-shadow: 0 0 0 3px #dfe3f1;
 }
 
 .coa-form .btn {
