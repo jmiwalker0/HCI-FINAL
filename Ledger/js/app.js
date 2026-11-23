@@ -81,6 +81,78 @@ class LedgerUtils {
         }
     };
 
+    // Common adjusting entries. Each preset fills in the usual two accounts;
+    // the person can change either account before saving.
+    static ADJUSTMENT_TYPES = {
+        depreciation: {
+            label: "Depreciation",
+            description: "Depreciation for the period",
+            debit: { account: "Depreciation Expense", type: "expense" },
+            credit: { account: "Accumulated Depreciation", type: "asset" },
+            help: "Spreads the cost of equipment over its useful life. Increases an expense and reduces the asset's value."
+        },
+        supplies: {
+            label: "Supplies used",
+            description: "Supplies used during the period",
+            debit: { account: "Supplies Expense", type: "expense" },
+            credit: { account: "Supplies", type: "asset" },
+            help: "Some of the supplies you bought were used up. Move that cost from the asset to an expense."
+        },
+        prepaid: {
+            label: "Prepaid expense used up",
+            description: "Prepaid expense used during the period",
+            debit: { account: "Rent Expense", type: "expense" },
+            credit: { account: "Prepaid Rent", type: "asset" },
+            help: "A cost you paid in advance (rent, insurance) has now expired. Change the accounts if it is not rent."
+        },
+        accruedExpense: {
+            label: "Accrued expense (owed, not yet paid)",
+            description: "Expense incurred but not yet paid",
+            debit: { account: "Salaries Expense", type: "expense" },
+            credit: { account: "Salaries Payable", type: "liability" },
+            help: "You used a service or owe wages but have not paid or recorded it yet. Change the accounts if it is not salaries."
+        },
+        unearned: {
+            label: "Unearned revenue now earned",
+            description: "Advance payment now earned",
+            debit: { account: "Unearned Revenue", type: "liability" },
+            credit: { account: "Service Revenue", type: "revenue" },
+            help: "A customer paid in advance and you have now done the work."
+        },
+        accruedRevenue: {
+            label: "Accrued revenue (earned, not yet received)",
+            description: "Revenue earned but not yet received",
+            debit: { account: "Accounts Receivable", type: "asset" },
+            credit: { account: "Service Revenue", type: "revenue" },
+            help: "You did the work but have not been paid or billed yet."
+        },
+        other: {
+            label: "Other adjustment",
+            description: "",
+            debit: { account: "", type: null },
+            credit: { account: "", type: null },
+            help: "Choose any two accounts for an adjustment not listed above."
+        }
+    };
+
+    // Chart of Accounts wins; then the preset's own account; then the name.
+    static resolveAccountType(name, presetLine) {
+
+        const chartAccount = LedgerUtils.findAccount(name);
+
+        if (chartAccount?.account_type) return chartAccount.account_type;
+
+        if (
+            presetLine?.type &&
+            String(presetLine.account || "").toLowerCase() ===
+                String(name || "").trim().toLowerCase()
+        ) {
+            return presetLine.type;
+        }
+
+        return LedgerUtils.accountTypeFor(name);
+    }
+
     // "in" (purchase), "out" (sale) or null (no inventory effect)
     static stockEffect(type) {
         return LedgerUtils.TRANSACTION_TYPES[type]?.stock || null;
@@ -358,6 +430,7 @@ class LedgerState {
         this.receipts = [];
         this.inventory = [];
         this.inventoryMovements = [];
+        this.adjustments = [];
                 this.journalEdits = {};
 
         // Chart of accounts
@@ -379,6 +452,9 @@ class LedgerState {
 
         // Trial Balance preferences
         this.trialBalanceDate = LedgerUtils.today();
+
+        // Adjusted Trial Balance reporting date
+        this.adjustedTbDate = LedgerUtils.today();
 
         // Financial Statements period (defaults to this year so far)
         this.statementStart = LedgerUtils.today().slice(0, 4) + "-01-01";
@@ -404,6 +480,23 @@ class LedgerState {
                 transaction.status === "review"
                     ? "review"
                     : "approved"
+        }));
+    }
+
+    setAdjustments(entries) {
+
+        this.adjustments = (entries || []).map(entry => ({
+            id: String(entry.id),
+            date: String(entry.entry_date || "").slice(0, 10),
+            type: entry.adjustment_type,
+            description: entry.description || "",
+            lines: (entry.lines || []).map(line => ({
+                account: line.account_name,
+                accountType: line.account_type,
+                description: entry.description || "",
+                debit: Number(line.debit) || 0,
+                credit: Number(line.credit) || 0
+            }))
         }));
     }
 
@@ -507,6 +600,7 @@ class LedgerState {
         this.receipts = [];
         this.inventory = [];
         this.inventoryMovements = [];
+        this.adjustments = [];
                 this.journalEdits = {};
 
         this.accounts = [];
@@ -522,6 +616,9 @@ class LedgerState {
         this.dashboardChartType = "bar";
 
         this.trialBalanceDate = LedgerUtils.today();
+
+        // Adjusted Trial Balance reporting date
+        this.adjustedTbDate = LedgerUtils.today();
 
         // Financial Statements period (defaults to this year so far)
         this.statementStart = LedgerUtils.today().slice(0, 4) + "-01-01";
@@ -643,6 +740,29 @@ class LedgerAPI {
             : data.transactions || [];
 
         this.state.setTransactions(transactions);
+    }
+
+    async loadAdjustments() {
+
+        const data = await this.request("/adjusting-entries");
+
+        this.state.setAdjustments(data.adjustingEntries || []);
+    }
+
+    async saveAdjustment(entry) {
+
+        return this.request("/adjusting-entries", {
+            method: "POST",
+            body: JSON.stringify(entry)
+        });
+    }
+
+    async deleteAdjustment(id) {
+
+        return this.request(
+            `/adjusting-entries/${encodeURIComponent(id)}`,
+            { method: "DELETE" }
+        );
     }
 
     async loadInventory() {
@@ -1388,6 +1508,35 @@ class LedgerAccounting {
     // cover startDate..endDate; the Balance Sheet is as of endDate.
     // -----------------------------------------------------
 
+    // Posted transactions plus (optionally) adjusting entries, each as
+    // { date, lines, adjusting } so reports can treat them the same way.
+    static ledgerEntries(state, includeAdjustments) {
+
+        const entries = state.getPostedTransactions()
+            .filter(transaction => transaction.date)
+            .map(transaction => ({
+                date: transaction.date,
+                lines: state.getJournalLines(transaction),
+                adjusting: false
+            }));
+
+        if (includeAdjustments) {
+
+            state.adjustments.forEach(entry => {
+
+                if (!entry.date) return;
+
+                entries.push({
+                    date: entry.date,
+                    lines: entry.lines,
+                    adjusting: true
+                });
+            });
+        }
+
+        return entries;
+    }
+
     static financialStatements(state, startDate, endDate) {
 
         const round = value => {
@@ -1404,14 +1553,14 @@ class LedgerAccounting {
         // account -> debit/credit totals before the period and within it
         const accounts = new Map();
 
-        state.getPostedTransactions().forEach(transaction => {
+        this.ledgerEntries(state, true).forEach(entry => {
 
-            if (!transaction.date || transaction.date > endDate) return;
+            if (entry.date > endDate) return;
 
             const bucket =
-                transaction.date < startDate ? "before" : "during";
+                entry.date < startDate ? "before" : "during";
 
-            state.getJournalLines(transaction).forEach(line => {
+            entry.lines.forEach(line => {
 
                 const name = String(line.account || "").trim();
 
@@ -1691,6 +1840,133 @@ class LedgerAccounting {
             difference,
             isBalanced: Math.abs(difference) < 0.005,
             hasData: list.length > 0
+        };
+    }
+
+
+    // -----------------------------------------------------
+    // ADJUSTED TRIAL BALANCE
+    // Unadjusted balances + adjusting entries = adjusted balances.
+    // -----------------------------------------------------
+
+    static adjustedTrialBalance(state, asOfDate = LedgerUtils.today()) {
+
+        const round = value => {
+            const rounded = Math.round(value * 100) / 100;
+            return rounded === 0 ? 0 : rounded;
+        };
+
+        const accounts = new Map();
+
+        this.ledgerEntries(state, true).forEach(entry => {
+
+            if (entry.date > asOfDate) return;
+
+            entry.lines.forEach(line => {
+
+                const name = String(line.account || "").trim();
+
+                if (!name) return;
+
+                const key = name.toLowerCase();
+
+                if (!accounts.has(key)) {
+
+                    accounts.set(key, {
+                        account: name,
+                        accountType:
+                            line.accountType ||
+                            LedgerUtils.accountTypeFor(name),
+                        un: { debit: 0, credit: 0 },
+                        adj: { debit: 0, credit: 0 }
+                    });
+                }
+
+                const bucket = accounts.get(key)[
+                    entry.adjusting ? "adj" : "un"
+                ];
+
+                bucket.debit += Number(line.debit) || 0;
+                bucket.credit += Number(line.credit) || 0;
+            });
+        });
+
+        const side = balance => ({
+            debit: balance > 0 ? round(balance) : 0,
+            credit: balance < 0 ? round(-balance) : 0
+        });
+
+        const rows = [];
+
+        accounts.forEach(a => {
+
+            const un = side(a.un.debit - a.un.credit);
+
+            const adj = {
+                debit: round(a.adj.debit),
+                credit: round(a.adj.credit)
+            };
+
+            const final = side(
+                (a.un.debit + a.adj.debit) -
+                (a.un.credit + a.adj.credit)
+            );
+
+            const empty =
+                un.debit + un.credit + adj.debit + adj.credit +
+                final.debit + final.credit === 0;
+
+            if (empty) return;
+
+            rows.push({
+                account: a.account,
+                accountType: a.accountType,
+                unDebit: un.debit,
+                unCredit: un.credit,
+                adjDebit: adj.debit,
+                adjCredit: adj.credit,
+                finalDebit: final.debit,
+                finalCredit: final.credit
+            });
+        });
+
+        const typeOrder =
+            ["asset", "liability", "equity", "revenue", "expense"];
+
+        rows.sort((a, b) => {
+
+            const order =
+                typeOrder.indexOf(a.accountType) -
+                typeOrder.indexOf(b.accountType);
+
+            return order || a.account.localeCompare(b.account);
+        });
+
+        const total = key =>
+            round(rows.reduce((sum, row) => sum + row[key], 0));
+
+        const totals = {
+            unDebit: total("unDebit"),
+            unCredit: total("unCredit"),
+            adjDebit: total("adjDebit"),
+            adjCredit: total("adjCredit"),
+            finalDebit: total("finalDebit"),
+            finalCredit: total("finalCredit")
+        };
+
+        const balanced = (d, c) => Math.abs(d - c) < 0.005;
+
+        return {
+            asOfDate,
+            rows,
+            totals,
+            unBalanced: balanced(totals.unDebit, totals.unCredit),
+            adjBalanced: balanced(totals.adjDebit, totals.adjCredit),
+            finalBalanced: balanced(totals.finalDebit, totals.finalCredit),
+            hasRows: rows.length > 0,
+            adjustmentCount: state.adjustments.filter(
+                entry => entry.date && entry.date <= asOfDate
+            ).length
         };
     }
 
@@ -3274,7 +3550,7 @@ class LedgerView {
 
                         <button
                             class="btn ghost small"
-                            data-goto="errors"
+                            data-goto="transactions"
                         >
                             View all
                         </button>
@@ -3872,6 +4148,29 @@ class LedgerView {
         });
 
 
+        // Adjusting entries are posted to the ledger as well.
+        this.state.adjustments.forEach(entry => {
+
+            entry.lines.forEach(line => {
+
+                const name = line.account;
+
+                accounts[name] ??= {
+                    accountType:
+                        line.accountType ||
+                        LedgerUtils.accountTypeFor(name),
+                    lines: []
+                };
+
+                accounts[name].lines.push({
+                    date: entry.date,
+                    desc: "Adjusting entry: " + entry.description,
+                    debit: Number(line.debit) || 0,
+                    credit: Number(line.credit) || 0
+                });
+            });
+        });
+
         const all = Object.entries(accounts);
 
         return `
@@ -4050,6 +4349,371 @@ class LedgerView {
     // =====================================================
 
     // -----------------------------------------------------
+    // ADJUSTING ENTRIES
+    // -----------------------------------------------------
+
+    adjustingEntries() {
+
+        const entries = [...this.state.adjustments].sort(
+            (a, b) => b.date.localeCompare(a.date)
+        );
+
+        const typeOptions = Object.entries(LedgerUtils.ADJUSTMENT_TYPES)
+            .map(([value, config]) => `
+                <option value="${value}">
+                    ${LedgerUtils.escape(config.label)}
+                </option>
+            `).join("");
+
+        const accountOptions = LedgerUtils.chart
+            .filter(account => account.is_active)
+            .map(account => `
+                <option value="${LedgerUtils.escape(account.account_name)}">
+            `).join("");
+
+        const rows = entries.length
+            ? entries.map(entry => {
+
+                const total = entry.lines.reduce(
+                    (sum, line) => sum + line.debit, 0
+                );
+
+                const lines = entry.lines.map(line =>
+                    line.debit > 0
+                        ? `Dr ${LedgerUtils.escape(line.account)}`
+                        : `&nbsp;&nbsp;&nbsp;Cr ${LedgerUtils.escape(line.account)}`
+                ).join("<br>");
+
+                return `
+                    <tr>
+                        <td>${LedgerUtils.escape(entry.date)}</td>
+                        <td>
+                            ${LedgerUtils.escape(
+                                LedgerUtils.ADJUSTMENT_TYPES[entry.type]?.label ||
+                                entry.type
+                            )}
+                        </td>
+                        <td>
+                            <strong>${LedgerUtils.escape(entry.description)}</strong>
+                            <div class="tiny muted">${lines}</div>
+                        </td>
+                        <td class="amount">${LedgerUtils.peso(total)}</td>
+                        <td>
+                            <button
+                                class="btn danger small"
+                                type="button"
+                                data-delete-adjustment="${LedgerUtils.escape(entry.id)}"
+                            >
+                                Delete
+                            </button>
+                        </td>
+                    </tr>
+                `;
+            }).join("")
+            : `
+                <tr>
+                    <td colspan="5">
+                        <div class="empty-state">
+                            No adjusting entries yet.
+                        </div>
+                    </td>
+                </tr>
+            `;
+
+        return `
+
+            ${this.heading(
+                "Adjusting Entries",
+                "Record period-end adjustments so your income and balances reflect what really happened, not just what was paid."
+            )}
+
+            <div class="info-box" style="margin-bottom:16px">
+
+                <strong>Why adjust?</strong>
+
+                Some changes are not triggered by a payment, such as
+                equipment wearing out, supplies being used up, or wages
+                owed but not yet paid. Record them here at the end of the
+                period. They appear in the General Ledger, the Adjusted
+                Trial Balance and the Financial Statements.
+
+            </div>
+
+            <div class="card" style="margin-bottom:16px">
+
+                <form id="adjustmentForm">
+
+                    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px">
+
+                        <label>
+                            Adjustment type
+                            <select id="adjType">${typeOptions}</select>
+                        </label>
+
+                        <label>
+                            Date
+                            <input
+                                type="date"
+                                id="adjDate"
+                                value="${LedgerUtils.today()}"
+                                max="${LedgerUtils.today()}"
+                                required
+                            >
+                        </label>
+
+                        <p
+                            class="form-note"
+                            id="adjHelp"
+                            style="grid-column:1/-1;margin:0"
+                        ></p>
+
+                        <label style="grid-column:1/-1">
+                            Description
+                            <input
+                                id="adjDescription"
+                                type="text"
+                                maxlength="100"
+                                required
+                            >
+                        </label>
+
+                        <label>
+                            Debit account
+                            <input
+                                id="adjDebit"
+                                type="text"
+                                list="adjAccountList"
+                                autocomplete="off"
+                                required
+                            >
+                        </label>
+
+                        <label>
+                            Credit account
+                            <input
+                                id="adjCredit"
+                                type="text"
+                                list="adjAccountList"
+                                autocomplete="off"
+                                required
+                            >
+                        </label>
+
+                        <label>
+                            Amount (₱)
+                            <input
+                                id="adjAmount"
+                                type="number"
+                                min="0.01"
+                                step="0.01"
+                                placeholder="0.00"
+                                required
+                            >
+                        </label>
+
+                    </div>
+
+                    <datalist id="adjAccountList">${accountOptions}</datalist>
+
+                    <p class="form-note" id="adjHint"></p>
+
+                    <button type="submit" class="btn primary">
+                        Record adjusting entry
+                    </button>
+
+                </form>
+
+            </div>
+
+            <div class="card table-card">
+
+                <div class="card-head">
+                    <h3>Recorded adjustments</h3>
+                    <span class="tiny muted">${entries.length} record(s)</span>
+                </div>
+
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>DATE</th>
+                                <th>TYPE</th>
+                                <th>ENTRY</th>
+                                <th>AMOUNT</th>
+                                <th>ACTION</th>
+                            </tr>
+                        </thead>
+                        <tbody>${rows}</tbody>
+                    </table>
+                </div>
+
+            </div>
+
+        `;
+    }
+
+
+    // -----------------------------------------------------
+    // ADJUSTED TRIAL BALANCE
+    // -----------------------------------------------------
+
+    adjustedTrialBalance() {
+
+        const asOfDate =
+            this.state.adjustedTbDate || LedgerUtils.today();
+
+        const report =
+            LedgerAccounting.adjustedTrialBalance(this.state, asOfDate);
+
+        const cell = amount =>
+            amount > 0 ? LedgerUtils.peso(amount) : "";
+
+        const allBalanced =
+            report.unBalanced && report.adjBalanced && report.finalBalanced;
+
+        const statusClass = !report.hasRows
+            ? ""
+            : allBalanced ? "positive" : "negative";
+
+        const t = report.totals;
+
+        return `
+
+            ${this.heading(
+                "Adjusted Trial Balance",
+                "Unadjusted balances, plus your adjusting entries, equals the adjusted balances used for the financial statements.",
+                `
+                    <button
+                        class="btn secondary"
+                        id="exportAdjustedTb"
+                        type="button"
+                    >
+                        ↓ Export CSV
+                    </button>
+                `
+            )}
+
+            <div class="card trial-balance-filter">
+
+                <label for="adjustedTbDate">
+                    <span class="trial-balance-filter-label">
+                        REPORTING DATE
+                    </span>
+                    <input
+                        type="date"
+                        id="adjustedTbDate"
+                        value="${LedgerUtils.escape(asOfDate)}"
+                        max="${LedgerUtils.today()}"
+                    >
+                </label>
+
+                <div class="trial-balance-date-note">
+                    Showing balances up to
+                    <strong>${LedgerUtils.escape(asOfDate)}</strong>
+                    with ${report.adjustmentCount} adjusting
+                    entr${report.adjustmentCount === 1 ? "y" : "ies"}.
+                    Transactions marked NEEDS REVIEW are excluded.
+                </div>
+
+            </div>
+
+            <div class="card" style="margin-top:16px">
+
+                <p class="eyebrow">BALANCE VERIFICATION</p>
+
+                <h3 class="${statusClass}">
+                    ${
+                        !report.hasRows
+                            ? "NO DATA"
+                            : allBalanced
+                                ? "ALL THREE COLUMN PAIRS BALANCE"
+                                : "OUT OF BALANCE"
+                    }
+                </h3>
+
+                <p class="tiny muted">
+                    ${
+                        report.hasRows && !report.adjustmentCount
+                            ? "No adjusting entries recorded for this date yet, so the adjusted balances equal the unadjusted ones. Record them on the Adjusting Entries page."
+                            : report.hasRows && !allBalanced
+                                ? "Debits and credits do not match in at least one column pair. Review your journal and adjusting entries."
+                                : "Total debits equal total credits in the unadjusted, adjustment and adjusted columns."
+                    }
+                </p>
+
+            </div>
+
+            <div class="card table-card" style="margin-top:16px">
+
+                <div class="table-wrap">
+
+                    <table>
+
+                        <thead>
+                            <tr>
+                                <th rowspan="2">ACCOUNT</th>
+                                <th rowspan="2">TYPE</th>
+                                <th colspan="2" style="text-align:center">UNADJUSTED</th>
+                                <th colspan="2" style="text-align:center">ADJUSTMENTS</th>
+                                <th colspan="2" style="text-align:center">ADJUSTED</th>
+                            </tr>
+                            <tr>
+                                <th>DEBIT</th><th>CREDIT</th>
+                                <th>DEBIT</th><th>CREDIT</th>
+                                <th>DEBIT</th><th>CREDIT</th>
+                            </tr>
+                        </thead>
+
+                        <tbody>
+                            ${
+                                report.rows.length
+                                    ? report.rows.map(row => `
+                                        <tr>
+                                            <td><strong>${LedgerUtils.escape(row.account)}</strong></td>
+                                            <td>${LedgerUtils.escape(row.accountType.toUpperCase())}</td>
+                                            <td class="amount">${cell(row.unDebit)}</td>
+                                            <td class="amount">${cell(row.unCredit)}</td>
+                                            <td class="amount">${cell(row.adjDebit)}</td>
+                                            <td class="amount">${cell(row.adjCredit)}</td>
+                                            <td class="amount">${cell(row.finalDebit)}</td>
+                                            <td class="amount">${cell(row.finalCredit)}</td>
+                                        </tr>
+                                    `).join("")
+                                    : `
+                                        <tr>
+                                            <td colspan="8">
+                                                <div class="empty-state">
+                                                    No posted account balances were found for the selected date.
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    `
+                            }
+                        </tbody>
+
+                        <tfoot>
+                            <tr style="font-weight:700">
+                                <td colspan="2">TOTAL</td>
+                                <td class="amount">${LedgerUtils.peso(t.unDebit)}</td>
+                                <td class="amount">${LedgerUtils.peso(t.unCredit)}</td>
+                                <td class="amount">${LedgerUtils.peso(t.adjDebit)}</td>
+                                <td class="amount">${LedgerUtils.peso(t.adjCredit)}</td>
+                                <td class="amount">${LedgerUtils.peso(t.finalDebit)}</td>
+                                <td class="amount">${LedgerUtils.peso(t.finalCredit)}</td>
+                            </tr>
+                        </tfoot>
+
+                    </table>
+
+                </div>
+
+            </div>
+
+        `;
+    }
+
+
+    // -----------------------------------------------------
     // FINANCIAL STATEMENTS
     // -----------------------------------------------------
 
@@ -4167,6 +4831,7 @@ class LedgerView {
                     The Income Statement and Owner's Equity cover
                     <strong>${period}</strong>.
                     The Balance Sheet shows balances at the end date.
+                    These statements include your adjusting entries.
                     Transactions marked NEEDS REVIEW are excluded.
                 </div>
 
@@ -4319,6 +4984,9 @@ class LedgerView {
                 credit balances of your General Ledger accounts.
 
                 Total debit balances should equal total credit balances.
+
+                This is the unadjusted trial balance; adjusting entries
+                appear on the Adjusted Trial Balance page.
 
                 Transactions marked NEEDS REVIEW are excluded.
 
@@ -4787,381 +5455,6 @@ class LedgerView {
                 accept="image/*,.pdf"
                 hidden
             >
-
-        `;
-    }
-
-
-    // =====================================================
-    // ERROR DETECTION
-    // =====================================================
-
-    errors() {
-
-        const issues = [];
-
-        this.state.transactions.forEach(transaction => {
-
-            if (
-                !transaction.date ||
-                !transaction.description ||
-                !transaction.amount ||
-                transaction.amount <= 0
-            ) {
-
-                issues.push({
-
-                    transaction,
-
-                    title: "Missing or invalid transaction information",
-
-                    detail: "Check the date, description, and amount."
-
-                });
-            }
-
-            if (transaction.status === "review") {
-
-                issues.push({
-
-                    transaction,
-
-                    title: "Transaction requires verification",
-
-                    detail:
-                        "Review the transaction details and supporting receipt."
-
-                });
-            }
-
-        });
-
-
-        const postedCount =
-            this.state.getPostedTransactions().length;
-
-        const reviewCount =
-            this.state.transactions.filter(
-                item => item.status === "review"
-            ).length;
-
-
-        return `
-
-            ${this.heading(
-                "Error Detection",
-
-                "Find missing information and potential issues in your transactions."
-            )}
-
-
-            <div class="grid metric-grid">
-
-                ${this.metric(
-                    "Items requiring attention",
-                    issues.length,
-                    "Based on current records",
-                    "!"
-                )}
-
-                ${this.metric(
-                    "Needs review",
-                    reviewCount,
-                    "Transactions flagged for checking",
-                    "◷"
-                )}
-
-                ${this.metric(
-                    "Posted transactions",
-                    postedCount,
-                    "Automatically included in the ledger",
-                    "✓"
-                )}
-
-                ${this.metric(
-                    "Validation rule",
-                    "Debit = Credit",
-                    "Double-entry check",
-                    "＝"
-                )}
-
-            </div>
-
-
-
-            <div class="card">
-
-                <div class="card-head">
-
-                    <h3>Items to review</h3>
-
-                    <span class="tiny muted">
-                        ${issues.length} issue(s)
-                    </span>
-
-                </div>
-
-
-                ${
-                    issues.map(({
-                        transaction,
-                        title,
-                        detail
-                    }) => `
-
-                        <div class="issue">
-
-                            <div>
-
-                                <h4>
-                                    ${LedgerUtils.escape(title)}
-                                </h4>
-
-                                <p>
-
-                                    ${LedgerUtils.escape(
-                                        transaction.description
-                                    )}
-
-                                    ·
-
-                                    ${LedgerUtils.escape(detail)}
-
-                                </p>
-
-                            </div>
-
-
-                            <div>
-
-                                ${LedgerUtils.badge(transaction.status)}
-
-                                <button
-                                    class="btn secondary small"
-                                    data-review="${LedgerUtils.escape(transaction.id)}"
-                                >
-                                    Review
-                                </button>
-
-                            </div>
-
-                        </div>
-
-                    `).join("")
-
-                    ||
-
-                    `
-                        <div class="empty-state">
-
-                            No validation issues detected
-                            in the current transactions.
-
-                        </div>
-                    `
-                }
-
-            </div>
-
-        `;
-    }
-
-
-    // =====================================================
-    // REPORTS
-    // =====================================================
-
-    reports() {
-
-        const totals =
-            LedgerAccounting.totals(this.state);
-
-        const expensesPct = totals.income
-
-            ? Math.min(
-                100,
-                Math.max(
-                    0,
-                    totals.expenses / totals.income * 100
-                )
-            )
-
-            : 0;
-
-        const categories =
-            LedgerAccounting.categoryBreakdown(this.state);
-
-
-        return `
-
-            ${this.heading(
-                "Reports",
-
-                "Monitor income, expenses, and net profit from saved journal entries.",
-
-                `
-                    <button
-                        class="btn secondary"
-                        id="exportReport"
-                    >
-                        ↓ Export CSV
-                    </button>
-                `
-            )}
-
-
-            <div class="grid metric-grid">
-
-                ${this.metric(
-                    "Total income",
-                    LedgerUtils.peso(totals.income),
-                    "Posted income",
-                    "↗"
-                )}
-
-                ${this.metric(
-                    "Total expenses",
-                    LedgerUtils.peso(totals.expenses),
-                    "Posted expenses",
-                    "↘"
-                )}
-
-                ${this.metric(
-                    "Net profit",
-                    LedgerUtils.peso(totals.profit),
-                    "Income less expenses",
-                    "₱"
-                )}
-
-                ${this.metric(
-                    "Posted transactions",
-                    totals.postedTransactions,
-                    "Automatically recorded in the ledger",
-                    "▤"
-                )}
-
-            </div>
-
-
-
-            <div class="grid two-col">
-
-
-                <div class="card">
-
-                    <div class="card-head">
-
-                        <h3>Financial breakdown</h3>
-
-                        <span class="tiny muted">
-                            Posted transactions
-                        </span>
-
-                    </div>
-
-
-                    <div class="breakdown-row">
-
-                        <span>Income</span>
-
-                        <strong class="positive">
-                            ${LedgerUtils.peso(totals.income)}
-                        </strong>
-
-                    </div>
-
-
-                    <div class="breakdown-row">
-
-                        <span>Expenses</span>
-
-                        <strong>
-                            ${LedgerUtils.peso(totals.expenses)}
-                        </strong>
-
-                    </div>
-
-
-                    <div class="breakdown-row">
-
-                        <span>Net profit</span>
-
-                        <strong>
-                            ${LedgerUtils.peso(totals.profit)}
-                        </strong>
-
-                    </div>
-
-
-                    <div class="muted-small">
-                        Expense-to-income ratio
-                    </div>
-
-
-                    <div class="progress">
-
-                        <span style="width:${expensesPct}%"></span>
-
-                    </div>
-
-
-                    <p class="tiny muted">
-                        ${expensesPct.toFixed(1)}% of posted income
-                    </p>
-
-                </div>
-
-
-
-                <div class="card">
-
-                    <div class="card-head">
-                        <h3>By transaction category</h3>
-                    </div>
-
-
-                    ${
-                        categories.map(([account, amount]) => `
-
-                            <div class="breakdown-row">
-
-                                <span>
-                                    ${LedgerUtils.escape(account)}
-                                </span>
-
-                                <strong>
-                                    ${LedgerUtils.peso(amount)}
-                                </strong>
-
-                            </div>
-
-                        `).join("")
-
-                        ||
-
-                        `
-                            <p class="muted tiny">
-                                No revenue or expense entries.
-                            </p>
-                        `
-                    }
-
-                </div>
-
-            </div>
-
-
-            <p
-                class="muted-small"
-                style="margin-top:15px"
-            >
-
-                These are basic management summaries,
-                not a complete set of formal financial statements.
-
-                Values are calculated from posted transactions.
-
-            </p>
 
         `;
     }
@@ -5744,15 +6037,15 @@ class LedgerView {
 
             trialBalance: () => this.trialBalance(),
 
+            adjustingEntries: () => this.adjustingEntries(),
+
+            adjustedTrialBalance: () => this.adjustedTrialBalance(),
+
             financialStatements: () => this.financialStatements(),
 
             receipts: () => this.receipts(),
 
             inventory: () => this.inventory(),
-
-            errors: () => this.errors(),
-
-            reports: () => this.reports(),
 
             settings: () => this.settings()
 
@@ -5794,15 +6087,15 @@ class LedgerApp {
 
             trialBalance: "Trial Balance",
 
+            adjustingEntries: "Adjusting Entries",
+
+            adjustedTrialBalance: "Adjusted Trial Balance",
+
             financialStatements: "Financial Statements",
 
             receipts: "Receipts",
 
             inventory: "Inventory",
-
-            errors: "Error Detection",
-
-            reports: "Reports",
 
             settings: "Settings"
 
@@ -6076,6 +6369,19 @@ class LedgerApp {
 
                 LedgerUtils.toast(
                     "Inventory could not be loaded: " + error.message,
+                    "error"
+                );
+            }
+
+            try {
+                await this.api.loadAdjustments();
+
+            } catch (error) {
+
+                if (!this.api.getToken()) return;
+
+                LedgerUtils.toast(
+                    "Adjusting entries could not be loaded: " + error.message,
                     "error"
                 );
             }
@@ -7024,6 +7330,262 @@ ${errors.length > 10
 
         // Re-render Trial Balance using selected date.
         this.render("trialBalance");
+    }
+
+
+    // -----------------------------------------------------
+    // ADJUSTING ENTRIES
+    // -----------------------------------------------------
+
+    // Fill the form with the usual accounts for the chosen type.
+    applyAdjustmentPreset() {
+
+        const type = document.getElementById("adjType")?.value;
+
+        const preset = LedgerUtils.ADJUSTMENT_TYPES[type];
+
+        if (!preset) return;
+
+        const set = (id, value) => {
+            const field = document.getElementById(id);
+            if (field) field.value = value;
+        };
+
+        set("adjDescription", preset.description);
+        set("adjDebit", preset.debit.account);
+        set("adjCredit", preset.credit.account);
+
+        const help = document.getElementById("adjHelp");
+
+        if (help) help.textContent = preset.help;
+
+        this.updateAdjustmentHint();
+    }
+
+    updateAdjustmentHint() {
+
+        const hint = document.getElementById("adjHint");
+
+        if (!hint) return;
+
+        const missing = ["adjDebit", "adjCredit"]
+            .map(id => document.getElementById(id)?.value.trim() || "")
+            .filter(name => name && !LedgerUtils.findAccount(name));
+
+        hint.textContent = missing.length
+            ? `Not in your Chart of Accounts yet: ${[...new Set(missing)].join(", ")}. ` +
+              `The entry will still post, but add the account in Chart of Accounts ` +
+              `so it is classified correctly everywhere.`
+            : "";
+    }
+
+    async addAdjustment(event) {
+
+        event.preventDefault();
+
+        const value = id =>
+            document.getElementById(id)?.value.trim() || "";
+
+        const type = value("adjType");
+        const date = value("adjDate");
+        const description = value("adjDescription");
+        const debitName = value("adjDebit");
+        const creditName = value("adjCredit");
+
+        const amount =
+            Math.round(Number(value("adjAmount")) * 100) / 100;
+
+        const fail = message =>
+            LedgerUtils.toast(message, "error");
+
+        if (!date || !description || !debitName || !creditName) {
+            return fail("Complete all required fields.");
+        }
+
+        if (date > LedgerUtils.today()) {
+            return fail("The date cannot be in the future.");
+        }
+
+        if (!Number.isFinite(amount) || amount <= 0) {
+            return fail("Enter an amount greater than zero.");
+        }
+
+        if (debitName.toLowerCase() === creditName.toLowerCase()) {
+            return fail("The debit and credit accounts must be different.");
+        }
+
+        const preset = LedgerUtils.ADJUSTMENT_TYPES[type];
+
+        const button =
+            event.currentTarget?.querySelector('button[type="submit"]');
+
+        if (button) button.disabled = true;
+
+        try {
+
+            await this.api.saveAdjustment({
+                entry_date: date,
+                adjustment_type: type,
+                description,
+                lines: [
+                    {
+                        account_name: debitName,
+                        account_type: LedgerUtils.resolveAccountType(
+                            debitName, preset?.debit
+                        ),
+                        debit: amount,
+                        credit: 0
+                    },
+                    {
+                        account_name: creditName,
+                        account_type: LedgerUtils.resolveAccountType(
+                            creditName, preset?.credit
+                        ),
+                        debit: 0,
+                        credit: amount
+                    }
+                ]
+            });
+
+            await this.api.loadAdjustments();
+
+            this.render("adjustingEntries");
+
+            LedgerUtils.toast("Adjusting entry recorded.");
+
+        } catch (error) {
+
+            LedgerUtils.toast(error.message, "error");
+
+            if (button) button.disabled = false;
+        }
+    }
+
+    async deleteAdjustment(id) {
+
+        const entry =
+            this.state.adjustments.find(item => item.id === String(id));
+
+        if (!entry) return;
+
+        const total = entry.lines.reduce(
+            (sum, line) => sum + line.debit, 0
+        );
+
+        if (!window.confirm(
+            `Delete this adjusting entry?\n\n` +
+            `${entry.date} · ${entry.description} · ` +
+            `${LedgerUtils.peso(total)}\n\n` +
+            `Your Adjusted Trial Balance and Financial Statements ` +
+            `will change. This cannot be undone.`
+        )) {
+            return;
+        }
+
+        try {
+
+            await this.api.deleteAdjustment(id);
+
+            await this.api.loadAdjustments();
+
+            this.render("adjustingEntries");
+
+            LedgerUtils.toast("Adjusting entry deleted.");
+
+        } catch (error) {
+
+            LedgerUtils.toast(error.message, "error");
+        }
+    }
+
+    // -----------------------------------------------------
+    // ADJUSTED TRIAL BALANCE DATE + EXPORT
+    // -----------------------------------------------------
+
+    updateAdjustedTbDate(value) {
+
+        if (!value) {
+
+            LedgerUtils.toast("Choose a reporting date.", "error");
+
+            return;
+        }
+
+        if (value > LedgerUtils.today()) {
+
+            LedgerUtils.toast(
+                "The reporting date cannot be in the future.",
+                "error"
+            );
+
+            return;
+        }
+
+        this.state.adjustedTbDate = value;
+
+        this.render("adjustedTrialBalance");
+    }
+
+    exportAdjustedTbCSV() {
+
+        const asOfDate =
+            this.state.adjustedTbDate || LedgerUtils.today();
+
+        const report =
+            LedgerAccounting.adjustedTrialBalance(this.state, asOfDate);
+
+        const money = amount => amount.toFixed(2);
+
+        const rows = [
+
+            [
+                "Account Name", "Account Type",
+                "Unadjusted Debit", "Unadjusted Credit",
+                "Adjustment Debit", "Adjustment Credit",
+                "Adjusted Debit", "Adjusted Credit"
+            ],
+
+            ...report.rows.map(row => [
+                row.account, row.accountType,
+                money(row.unDebit), money(row.unCredit),
+                money(row.adjDebit), money(row.adjCredit),
+                money(row.finalDebit), money(row.finalCredit)
+            ]),
+
+            [
+                "TOTAL", "",
+                money(report.totals.unDebit), money(report.totals.unCredit),
+                money(report.totals.adjDebit), money(report.totals.adjCredit),
+                money(report.totals.finalDebit), money(report.totals.finalCredit)
+            ]
+        ];
+
+        const csv = rows
+            .map(row =>
+                row.map(value => LedgerUtils.csvEscape(value)).join(",")
+            )
+            .join("\r\n");
+
+        const blob = new Blob(
+            ["\uFEFF", csv],
+            { type: "text/csv;charset=utf-8;" }
+        );
+
+        const url = URL.createObjectURL(blob);
+
+        const link = document.createElement("a");
+
+        link.href = url;
+
+        link.download = `ledger-adjusted-trial-balance-${asOfDate}.csv`;
+
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+
+        URL.revokeObjectURL(url);
+
+        LedgerUtils.toast("Adjusted Trial Balance exported successfully.");
     }
 
 
@@ -8129,6 +8691,50 @@ ${errors.length > 10
             });
 
 
+        // Adjusting entries form
+        document.getElementById("adjustmentForm")
+            ?.addEventListener("submit", event => {
+                this.addAdjustment(event);
+            });
+
+        document.getElementById("adjType")
+            ?.addEventListener("change", () => {
+                this.applyAdjustmentPreset();
+            });
+
+        ["adjDebit", "adjCredit"].forEach(id => {
+            document.getElementById(id)
+                ?.addEventListener("input", () => {
+                    this.updateAdjustmentHint();
+                });
+        });
+
+        if (document.getElementById("adjType")) {
+            this.applyAdjustmentPreset();
+        }
+
+        document.querySelectorAll("[data-delete-adjustment]")
+            .forEach(button => {
+                button.addEventListener("click", () => {
+                    this.deleteAdjustment(
+                        button.dataset.deleteAdjustment
+                    );
+                });
+            });
+
+
+        // Adjusted Trial Balance date + export
+        document.getElementById("adjustedTbDate")
+            ?.addEventListener("change", event => {
+                this.updateAdjustedTbDate(event.target.value);
+            });
+
+        document.getElementById("exportAdjustedTb")
+            ?.addEventListener("click", () => {
+                this.exportAdjustedTbCSV();
+            });
+
+
         // Financial Statements period + export
         ["statementStart", "statementEnd"].forEach(id => {
             document.getElementById(id)
@@ -8273,15 +8879,6 @@ ${errors.length > 10
             ?.addEventListener("change", event => {
 
                 this.addReceiptFiles(event.target.files);
-
-            });
-
-
-        // Export report
-        document.getElementById("exportReport")
-            ?.addEventListener("click", () => {
-
-                this.exportCSV();
 
             });
 
