@@ -52,6 +52,10 @@ app.use("/api/accounts", accountRoutes);
 const receiptRoutes = require("./routes/receipts");
 app.use("/api/receipts", receiptRoutes);
 
+// INVENTORY
+const inventoryRoutes = require("./routes/inventory");
+app.use("/api/inventory", inventoryRoutes);
+
 /* =====================================
    POSTGRESQL CONNECTION TEST
    ===================================== */

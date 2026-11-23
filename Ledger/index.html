@@ -204,6 +204,14 @@
 
         <button
           class="nav-item"
+          data-page="inventory"
+        >
+          <span class="nav-icon">▣</span>
+          Inventory
+        </button>
+
+        <button
+          class="nav-item"
           data-page="receipts"
         >
           <span class="nav-icon">▧</span>
@@ -424,17 +432,7 @@
             <select
               id="txType"
               required
-            >
-
-              <option value="expense">
-                Expense
-              </option>
-
-              <option value="income">
-                Income
-              </option>
-
-            </select>
+            ></select>
 
           </label>
 
@@ -455,9 +453,73 @@
           </label>
 
 
+          <!-- WHAT THE SELECTED TYPE DOES -->
+
+          <p class="form-note span-2" id="txTypeHelp"></p>
+
+
+          <!-- ITEM, QUANTITY AND UNIT PRICE (Purchase and Sale only) -->
+
+          <div
+            id="inventoryFields"
+            class="span-2"
+            style="display:none"
+          >
+
+            <div class="form-grid" style="padding:0">
+
+              <label>
+                Item
+
+                <input
+                  id="txItem"
+                  type="text"
+                  list="inventoryItemList"
+                  placeholder="Pick an existing item or type a new one"
+                  maxlength="100"
+                  autocomplete="off"
+                >
+
+                <datalist id="inventoryItemList"></datalist>
+
+              </label>
+
+              <label>
+                Quantity
+
+                <input
+                  id="txQuantity"
+                  type="number"
+                  min="0.01"
+                  step="0.01"
+                  placeholder="0"
+                >
+
+              </label>
+
+              <label>
+                <span id="txUnitPriceLabel">Unit price (₱)</span>
+
+                <input
+                  id="txUnitPrice"
+                  type="number"
+                  min="0.01"
+                  step="0.01"
+                  placeholder="0.00"
+                >
+
+              </label>
+
+            </div>
+
+            <p class="form-note" id="txStockHint"></p>
+
+          </div>
+
+
           <!-- CATEGORY -->
 
-          <label>
+          <label id="txCategoryLabel">
             Category
 
             <select id="txCategory">
@@ -484,7 +546,7 @@
           <!-- AMOUNT -->
 
           <label>
-            Amount (₱)
+            <span id="txAmountLabel">Amount (₱)</span>
 
             <input
               id="txAmount"

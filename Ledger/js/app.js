@@ -30,17 +30,32 @@ class LedgerUtils {
     // Transaction types and the categories each one offers.
     // "inflow" decides the +/− sign and colour in the transaction table.
     static TRANSACTION_TYPES = {
-        income: {
-            label: "Income",
+        purchase: {
+            label: "Purchase",
+            help: "Buying goods to resell. Adds to your inventory (it is not counted as an expense).",
+            inflow: false,
+            stock: "in",
+            categories: ["Inventory Purchase"]
+        },
+        sale: {
+            label: "Sale",
+            help: "Selling goods from your inventory. Records the sales revenue and deducts the stock.",
+            inflow: true,
+            stock: "out",
+            categories: ["Sales Revenue"]
+        },
+        service_income: {
+            label: "Service Income",
+            help: "Money earned from services. Does not affect inventory.",
             inflow: true,
             categories: [
-                "Sales Revenue",
                 "Service Revenue",
                 "Other Income"
             ]
         },
         expense: {
             label: "Expense",
+            help: "Day-to-day costs such as rent or utilities. Does not affect inventory.",
             inflow: false,
             categories: [
                 "Office Supplies",
@@ -48,26 +63,32 @@ class LedgerUtils {
                 "Transportation",
                 "Rent Expense",
                 "Salaries Expense",
-                "Cost of Goods Sold",
                 "Repairs and Maintenance",
                 "Other Expense"
             ]
         },
         investment: {
             label: "Owner's Investment",
+            help: "Money the owner puts into the business.",
             inflow: true,
             categories: ["Owner's Investment"]
         },
         withdrawal: {
             label: "Owner's Withdrawal",
+            help: "Money the owner takes out of the business.",
             inflow: false,
             categories: ["Owner's Withdrawal"]
         }
     };
 
+    // "in" (purchase), "out" (sale) or null (no inventory effect)
+    static stockEffect(type) {
+        return LedgerUtils.TRANSACTION_TYPES[type]?.stock || null;
+    }
+
     static isInflow(type) {
         return LedgerUtils.TRANSACTION_TYPES[type]?.inflow ??
-            type === "income";
+            ["income", "sale", "service_income"].includes(type);
     }
 
     static typeLabel(type) {
@@ -335,6 +356,8 @@ class LedgerState {
 
         this.transactions = [];
         this.receipts = [];
+        this.inventory = [];
+        this.inventoryMovements = [];
                 this.journalEdits = {};
 
         // Chart of accounts
@@ -377,6 +400,28 @@ class LedgerState {
                 transaction.status === "review"
                     ? "review"
                     : "approved"
+        }));
+    }
+
+    setInventory(data) {
+
+        this.inventory = (data.items || []).map(item => ({
+            id: String(item.id),
+            name: item.name,
+            quantity: Number(item.quantity_on_hand) || 0,
+            averageCost: Number(item.average_cost) || 0,
+            value: Number(item.stock_value) || 0
+        }));
+
+        this.inventoryMovements = (data.movements || []).map(move => ({
+            id: String(move.id),
+            type: move.movement_type,
+            itemName: move.item_name,
+            date: String(move.date || "").slice(0, 10),
+            description: move.description,
+            quantity: Number(move.quantity) || 0,
+            unitCost: Number(move.unit_cost) || 0,
+            totalCost: Number(move.total_cost) || 0
         }));
     }
 
@@ -456,6 +501,8 @@ class LedgerState {
 
         this.transactions = [];
         this.receipts = [];
+        this.inventory = [];
+        this.inventoryMovements = [];
                 this.journalEdits = {};
 
         this.accounts = [];
@@ -588,6 +635,13 @@ class LedgerAPI {
             : data.transactions || [];
 
         this.state.setTransactions(transactions);
+    }
+
+    async loadInventory() {
+
+        const data = await this.request("/inventory");
+
+        this.state.setInventory(data || {});
     }
 
     normalizeReceipt(receipt) {
@@ -835,20 +889,60 @@ class LedgerAccounting {
         return fallback;
     }
 
+    static inventoryAccount() {
+
+        return this.pickAccount(
+            ["Inventory", "Merchandise Inventory"],
+            "asset",
+            /inventor/i,
+            "Inventory"
+        );
+    }
+
+    static cogsAccount() {
+
+        return this.pickAccount(
+            ["Cost of Goods Sold"],
+            "expense",
+            /cost of (goods|sales)/i,
+            "Cost of Goods Sold"
+        );
+    }
+
     static accountFor(transaction) {
 
         const cash = this.pickAccount(
             ["Cash"], "asset", /cash/i, "Cash"
         );
 
-        if (transaction.type === "income") {
+        // Purchase: Dr Inventory, Cr Cash
+        if (transaction.type === "purchase") {
 
-            const preferred =
-                transaction.category === "Sales Revenue"
+            return {
+                debit: this.inventoryAccount(),
+                debitType: "asset",
+                credit: cash,
+                creditType: "asset"
+            };
+        }
+
+        // Sale / Service income: Dr Cash, Cr Revenue
+        // ("income" is the old type name, kept so old rows still work)
+        if (["income", "sale", "service_income"].includes(transaction.type)) {
+
+            let preferred;
+
+            if (transaction.type === "sale") {
+                preferred = "Sales Revenue";
+            } else if (transaction.category === "Other Income") {
+                preferred = "Other Income";
+            } else if (transaction.type === "service_income") {
+                preferred = "Service Revenue";
+            } else {
+                preferred = transaction.category === "Sales Revenue"
                     ? "Sales Revenue"
-                    : transaction.category === "Other Income"
-                        ? "Other Income"
-                        : "Service Revenue";
+                    : "Service Revenue";
+            }
 
             return {
                 debit: cash,
@@ -954,7 +1048,7 @@ class LedgerAccounting {
 
         const accounts = this.accountFor(transaction);
 
-        return [
+        const lines = [
 
             {
                 account: accounts.debit,
@@ -973,6 +1067,36 @@ class LedgerAccounting {
             }
 
         ];
+
+        // A sale also moves the goods out of inventory at their cost:
+        // Dr Cost of Goods Sold, Cr Inventory
+        const cogs = Number(transaction.cogs) || 0;
+
+        if (transaction.type === "sale" && cogs > 0) {
+
+            const note =
+                "Cost of goods sold" +
+                (transaction.item_name ? ": " + transaction.item_name : "");
+
+            lines.push(
+                {
+                    account: this.cogsAccount(),
+                    accountType: "expense",
+                    description: note,
+                    debit: cogs,
+                    credit: 0
+                },
+                {
+                    account: this.inventoryAccount(),
+                    accountType: "asset",
+                    description: note,
+                    debit: 0,
+                    credit: cogs
+                }
+            );
+        }
+
+        return lines;
     }
 
 
@@ -1680,6 +1804,19 @@ class LedgerCSVImporter {
             key => columns[key] === -1
         );
 
+        // Optional columns, needed only on purchase and sale rows.
+        const optionalAliases = {
+            item: ["item", "itemname", "product"],
+            quantity: ["quantity", "qty"]
+        };
+
+        Object.entries(optionalAliases).forEach(([key, names]) => {
+
+            columns[key] = headers.findIndex(
+                header => names.includes(header)
+            );
+        });
+
         if (missing.length) {
 
             throw new Error(
@@ -1704,6 +1841,14 @@ class LedgerCSVImporter {
             const description = getValue("description");
             const category = getValue("category");
             const type = getValue("type").toLowerCase();
+
+            const stockEffect = LedgerUtils.stockEffect(type);
+
+            const itemName = getValue("item");
+
+            const quantity = Number(
+                getValue("quantity").replace(/[,\s]/g, "")
+            );
 
             const amountText = getValue("amount")
                 .replace(/^(PHP|₱)\s*/i, "")
@@ -1748,6 +1893,19 @@ class LedgerCSVImporter {
                 );
             }
 
+            if (
+                stockEffect &&
+                (
+                    !itemName ||
+                    !Number.isFinite(quantity) ||
+                    quantity <= 0
+                )
+            ) {
+                errors.push(
+                    "Purchase and sale rows need an item and a quantity."
+                );
+            }
+
             if (errors.length) {
 
                 invalid.push({
@@ -1769,6 +1927,11 @@ class LedgerCSVImporter {
                     category,
                     type,
                     amount,
+
+                    ...(stockEffect
+                        ? { item_name: itemName, quantity }
+                        : {}),
+
                     status: "approved"
 
                 }
@@ -1789,47 +1952,24 @@ class LedgerCSVImporter {
 
     static createTemplate() {
 
+        // Amount is the TOTAL for the row. Item and quantity are only
+        // needed for purchase and sale. List purchases before the sales
+        // that use that stock.
         const rows = [
 
-            [
-                "date",
-                "description",
-                "category",
-                "type",
-                "amount"
-            ],
+            ["date", "description", "category", "type", "amount", "item", "quantity"],
 
-            [
-                "2026-11-01",
-                "Office supplies",
-                "Office Supplies",
-                "expense",
-                "1500.00"
-            ],
+            ["2026-11-01", "Office supplies", "Office Supplies", "expense", "1500.00", "", ""],
 
-            [
-                "2026-11-02",
-                "Product sales",
-                "Sales Revenue",
-                "income",
-                "5000.00"
-            ],
+            ["2026-11-02", "Owner capital contribution", "Owner's Investment", "investment", "20000.00", "", ""],
 
-            [
-                "2026-11-03",
-                "Owner capital contribution",
-                "Owner's Investment",
-                "investment",
-                "20000.00"
-            ],
+            ["2026-11-03", "Bought notebooks for resale", "Inventory Purchase", "purchase", "6000.00", "Notebook", "100"],
 
-            [
-                "2026-11-04",
-                "Owner cash withdrawal",
-                "Owner's Withdrawal",
-                "withdrawal",
-                "3000.00"
-            ]
+            ["2026-11-04", "Sold notebooks", "Sales Revenue", "sale", "2500.00", "Notebook", "25"],
+
+            ["2026-11-05", "Design consultation", "Service Revenue", "service_income", "3000.00", "", ""],
+
+            ["2026-11-06", "Owner cash withdrawal", "Owner's Withdrawal", "withdrawal", "3000.00", "", ""]
 
         ];
 
@@ -2980,21 +3120,7 @@ class LedgerView {
                         All types
                     </option>
 
-                    <option value="income">
-                        Income
-                    </option>
-
-                    <option value="expense">
-                        Expense
-                    </option>
-
-                    <option value="investment">
-                        Owner's Investment
-                    </option>
-
-                    <option value="withdrawal">
-                        Owner's Withdrawal
-                    </option>
+                    ${LedgerUtils.typeOptions("")}
 
                 </select>
 
@@ -3113,6 +3239,23 @@ class LedgerView {
                         <p class="eyebrow">
                             TRANSACTION #${id}
                         </p>
+
+                        ${
+                            transaction.type === "sale" && lines.length > 2
+                                ? `<p class="tiny muted">
+                                    The first two lines record the money
+                                    received from the sale. The last two
+                                    move the goods out of inventory at
+                                    what they cost you (Cost of Goods Sold).
+                                </p>`
+                                : transaction.type === "purchase"
+                                    ? `<p class="tiny muted">
+                                        Buying goods to resell adds to
+                                        Inventory, an asset. It is not an
+                                        expense until the goods are sold.
+                                    </p>`
+                                    : ""
+                        }
 
 
                         <div class="journal-transaction-details">
@@ -4906,6 +5049,157 @@ class LedgerView {
     // =====================================================
 
 
+    // =====================================================
+    // INVENTORY
+    // =====================================================
+
+    inventory() {
+
+        const items = this.state.inventory;
+        const moves = this.state.inventoryMovements;
+
+        const totalValue = items.reduce(
+            (sum, item) => sum + item.value, 0
+        );
+
+        const totalUnits = items.reduce(
+            (sum, item) => sum + item.quantity, 0
+        );
+
+        const itemRows = items.length
+            ? items.map(item => `
+                <tr>
+                    <td><strong>${LedgerUtils.escape(item.name)}</strong></td>
+                    <td>${item.quantity}</td>
+                    <td>${LedgerUtils.peso(item.averageCost)}</td>
+                    <td>${LedgerUtils.peso(item.value)}</td>
+                    <td>${
+                        item.quantity <= 0
+                            ? '<span class="badge review">OUT OF STOCK</span>'
+                            : '<span class="badge approved">IN STOCK</span>'
+                    }</td>
+                </tr>
+            `).join("")
+            : `
+                <tr>
+                    <td colspan="5">
+                        <div class="empty-state">
+                            No inventory yet. Add a Purchase transaction to
+                            stock your first item.
+                        </div>
+                    </td>
+                </tr>
+            `;
+
+        const moveRows = moves.length
+            ? moves.map(move => `
+                <tr>
+                    <td>${LedgerUtils.escape(move.date)}</td>
+                    <td>${LedgerUtils.escape(move.itemName)}</td>
+                    <td>${move.type === "purchase" ? "Purchase" : "Sale"}</td>
+                    <td class="amount ${
+                        move.type === "purchase" ? "positive" : "negative"
+                    }">
+                        ${move.type === "purchase" ? "+" : "−"}${move.quantity}
+                    </td>
+                    <td>${LedgerUtils.peso(move.unitCost)}</td>
+                    <td>${LedgerUtils.peso(move.totalCost)}</td>
+                </tr>
+            `).join("")
+            : `
+                <tr>
+                    <td colspan="6">
+                        <div class="empty-state">
+                            No stock movements yet.
+                        </div>
+                    </td>
+                </tr>
+            `;
+
+        return `
+
+            ${this.heading(
+                "Inventory",
+                "Stock is updated automatically by Purchase and Sale transactions."
+            )}
+
+            <div class="grid metric-grid">
+
+                ${this.metric(
+                    "ITEMS",
+                    String(items.length),
+                    "Distinct products",
+                    "▤"
+                )}
+
+                ${this.metric(
+                    "UNITS ON HAND",
+                    String(totalUnits),
+                    "Across all items",
+                    "▥"
+                )}
+
+                ${this.metric(
+                    "INVENTORY VALUE",
+                    LedgerUtils.peso(totalValue),
+                    "At average cost",
+                    "₱"
+                )}
+
+            </div>
+
+            <div class="card table-card" style="margin-top:16px">
+
+                <div class="card-head">
+                    <h3>Stock on hand</h3>
+                </div>
+
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>ITEM</th>
+                                <th>QUANTITY</th>
+                                <th>AVG. COST</th>
+                                <th>VALUE</th>
+                                <th>STATUS</th>
+                            </tr>
+                        </thead>
+                        <tbody>${itemRows}</tbody>
+                    </table>
+                </div>
+
+            </div>
+
+            <div class="card table-card" style="margin-top:16px">
+
+                <div class="card-head">
+                    <h3>Recent stock movements</h3>
+                    <span class="tiny muted">${moves.length} records</span>
+                </div>
+
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>DATE</th>
+                                <th>ITEM</th>
+                                <th>TYPE</th>
+                                <th>QTY</th>
+                                <th>UNIT COST</th>
+                                <th>TOTAL</th>
+                            </tr>
+                        </thead>
+                        <tbody>${moveRows}</tbody>
+                    </table>
+                </div>
+
+            </div>
+
+        `;
+    }
+
+
     getPages() {
 
         return {
@@ -4924,6 +5218,8 @@ class LedgerView {
             trialBalance: () => this.trialBalance(),
 
             receipts: () => this.receipts(),
+
+            inventory: () => this.inventory(),
 
             errors: () => this.errors(),
 
@@ -4970,6 +5266,8 @@ class LedgerApp {
             trialBalance: "Trial Balance",
 
             receipts: "Receipts",
+
+            inventory: "Inventory",
 
             errors: "Error Detection",
 
@@ -5238,6 +5536,19 @@ class LedgerApp {
                 );
             }
 
+            try {
+                await this.api.loadInventory();
+
+            } catch (error) {
+
+                if (!this.api.getToken()) return;
+
+                LedgerUtils.toast(
+                    "Inventory could not be loaded: " + error.message,
+                    "error"
+                );
+            }
+
 
             document.getElementById("connectionStatus").textContent =
                 "Database connected";
@@ -5385,10 +5696,185 @@ class LedgerApp {
         typeSelect.innerHTML = LedgerUtils.typeOptions(
             LedgerUtils.TRANSACTION_TYPES[current]
                 ? current
-                : "income"
+                : "expense"
         );
 
         this.populateTransactionCategories();
+    }
+
+    // Purchase and Sale also ask for the item, quantity and unit price.
+    // The total amount is worked out from those and is not typed in.
+    updateStockFields() {
+
+        const type = document.getElementById("txType")?.value;
+
+        const effect = LedgerUtils.stockEffect(type);
+
+        const help = document.getElementById("txTypeHelp");
+
+        if (help) {
+            help.textContent =
+                LedgerUtils.TRANSACTION_TYPES[type]?.help || "";
+        }
+
+        // A category with only one choice is not worth asking about.
+        const categoryLabel =
+            document.getElementById("txCategoryLabel");
+
+        const categorySelect =
+            document.getElementById("txCategory");
+
+        if (categoryLabel && categorySelect) {
+            categoryLabel.style.display =
+                categorySelect.options.length <= 1 ? "none" : "";
+        }
+
+        const box = document.getElementById("inventoryFields");
+
+        if (!box) return;
+
+        box.style.display = effect ? "" : "none";
+
+        const amount = document.getElementById("txAmount");
+
+        if (amount) {
+
+            // Leaving a purchase/sale: drop the calculated total.
+            if (!effect && amount.readOnly) amount.value = "";
+
+            amount.readOnly = Boolean(effect);
+            amount.required = !effect;
+
+            amount.placeholder = effect ? "Calculated" : "0.00";
+        }
+
+        const amountLabel = document.getElementById("txAmountLabel");
+
+        if (amountLabel) {
+            amountLabel.textContent = effect
+                ? "Total amount (₱) — calculated"
+                : "Amount (₱)";
+        }
+
+        const unitLabel = document.getElementById("txUnitPriceLabel");
+
+        if (unitLabel) {
+            unitLabel.textContent = effect === "in"
+                ? "Unit cost (₱) — price paid per item"
+                : "Unit price (₱) — price per item sold";
+        }
+
+        ["txItem", "txQuantity", "txUnitPrice"].forEach(id => {
+            const field = document.getElementById(id);
+            if (field) field.required = Boolean(effect);
+        });
+
+        const list = document.getElementById("inventoryItemList");
+
+        if (list) {
+            list.innerHTML = this.state.inventory.map(entry =>
+                `<option value="${LedgerUtils.escape(entry.name)}"></option>`
+            ).join("");
+        }
+
+        this.recalculateStockAmount();
+    }
+
+    // total = quantity x unit price
+    recalculateStockAmount() {
+
+        const type = document.getElementById("txType")?.value;
+
+        if (LedgerUtils.stockEffect(type)) {
+
+            const quantity =
+                Number(document.getElementById("txQuantity")?.value);
+
+            const unit =
+                Number(document.getElementById("txUnitPrice")?.value);
+
+            const amount = document.getElementById("txAmount");
+
+            if (amount) {
+                amount.value =
+                    quantity > 0 && unit > 0
+                        ? (Math.round(quantity * unit * 100) / 100)
+                            .toFixed(2)
+                        : "";
+            }
+        }
+
+        this.updateStockHint();
+    }
+
+    updateStockHint() {
+
+        const hint = document.getElementById("txStockHint");
+
+        if (!hint) return;
+
+        const type = document.getElementById("txType")?.value;
+        const effect = LedgerUtils.stockEffect(type);
+
+        if (!effect) {
+            hint.textContent = "";
+            return;
+        }
+
+        const name = document.getElementById("txItem")?.value.trim() || "";
+        const quantity = Number(document.getElementById("txQuantity")?.value);
+        const unit = Number(document.getElementById("txUnitPrice")?.value);
+
+        const stock = this.state.inventory.find(
+            entry => entry.name.toLowerCase() === name.toLowerCase()
+        );
+
+        const parts = [];
+
+        if (effect === "in") {
+
+            if (name && stock) {
+                parts.push(
+                    `Existing item — ${stock.quantity} currently in stock.`
+                );
+            } else if (name) {
+                parts.push("New item — it will be added to your inventory.");
+            } else {
+                parts.push("Adds to your inventory.");
+            }
+
+        } else if (name && !stock) {
+
+            parts.push(
+                "This item is not in your inventory yet. " +
+                "Record a Purchase first."
+            );
+
+        } else if (stock) {
+
+            parts.push(
+                `In stock: ${stock.quantity}. ` +
+                `Average cost: ${LedgerUtils.peso(stock.averageCost)} each.`
+            );
+
+            if (quantity > stock.quantity) {
+                parts.push("Not enough stock for this quantity.");
+            }
+
+        } else {
+
+            parts.push("Deducts from your inventory.");
+        }
+
+        if (quantity > 0 && unit > 0) {
+
+            parts.push(
+                `${quantity} × ${LedgerUtils.peso(unit)} = ` +
+                `${LedgerUtils.peso(quantity * unit)}.`
+            );
+        }
+
+        hint.textContent = parts.join(" ");
     }
 
     populateTransactionCategories() {
@@ -5402,6 +5888,8 @@ class LedgerApp {
 
         categorySelect.innerHTML =
             LedgerUtils.categoryOptions(typeSelect.value);
+
+        this.updateStockFields();
     }
 
     openModal() {
@@ -5413,6 +5901,13 @@ class LedgerApp {
             LedgerUtils.today();
 
         this.populateTransactionTypes();
+
+        ["txItem", "txQuantity", "txUnitPrice"].forEach(id => {
+            const field = document.getElementById(id);
+            if (field) field.value = "";
+        });
+
+        this.updateStockFields();
 
         document.getElementById("txDescription").focus();
     }
@@ -5463,6 +5958,14 @@ class LedgerApp {
         const file =
             document.getElementById("txReceipt").files[0];
 
+        const stockEffect = LedgerUtils.stockEffect(type);
+
+        const itemName =
+            document.getElementById("txItem")?.value.trim() || "";
+
+        const quantity =
+            Number(document.getElementById("txQuantity")?.value);
+
 
         if (
             !date ||
@@ -5486,7 +5989,27 @@ class LedgerApp {
         ) {
 
             LedgerUtils.toast(
-                "Enter an amount greater than zero.",
+                stockEffect
+                    ? "Enter the item, quantity and unit price."
+                    : "Enter an amount greater than zero.",
+                "error"
+            );
+
+            return;
+        }
+
+
+        if (
+            stockEffect &&
+            (
+                !itemName ||
+                !Number.isFinite(quantity) ||
+                quantity <= 0
+            )
+        ) {
+
+            LedgerUtils.toast(
+                "Enter the item name and a quantity greater than zero.",
                 "error"
             );
 
@@ -5523,6 +6046,10 @@ class LedgerApp {
 
                     amount,
 
+                    ...(stockEffect
+                        ? { item_name: itemName, quantity }
+                        : {}),
+
                     status: "approved"
 
                 });
@@ -5556,6 +6083,8 @@ class LedgerApp {
 
             await this.api.loadJournalEntries();
 
+            await this.api.loadInventory();
+
 
             this.closeModal();
 
@@ -5579,7 +6108,11 @@ class LedgerApp {
             } else {
 
                 LedgerUtils.toast(
-                    "Transaction saved to PostgreSQL."
+                    stockEffect === "in"
+                        ? "Purchase saved and inventory updated."
+                        : stockEffect === "out"
+                            ? "Sale saved and inventory updated."
+                            : "Transaction saved to PostgreSQL."
                 );
             }
 
@@ -5820,6 +6353,8 @@ Do you want to continue?`;
                     await this.api.loadTransactions();
 
                     await this.api.loadJournalEntries();
+
+                    await this.api.loadInventory();
 
                 } catch (error) {
 
@@ -6877,7 +7412,11 @@ ${errors.length > 10
             `Delete this transaction?\n\n` +
             `${transaction.date} · ${transaction.description} · ` +
             `${LedgerUtils.peso(transaction.amount)}\n\n` +
-            `Its journal entry will be removed too. ` +
+            (
+                LedgerUtils.stockEffect(transaction.type)
+                    ? `Its inventory change will be reversed, and its journal entry removed. `
+                    : `Its journal entry will be removed too. `
+            ) +
             `This cannot be undone.`
         );
 
@@ -6890,6 +7429,8 @@ ${errors.length > 10
             await this.api.loadTransactions();
 
             await this.api.loadJournalEntries();
+
+            await this.api.loadInventory();
 
             this.rerenderKeepScroll();
 
@@ -7224,6 +7765,18 @@ ${errors.length > 10
 
                 this.populateTransactionCategories();
 
+            });
+
+        ["txQuantity", "txUnitPrice"].forEach(id => {
+            document.getElementById(id)
+                ?.addEventListener("input", () => {
+                    this.recalculateStockAmount();
+                });
+        });
+
+        document.getElementById("txItem")
+            ?.addEventListener("input", () => {
+                this.updateStockHint();
             });
 
 
