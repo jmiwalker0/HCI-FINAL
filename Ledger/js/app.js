@@ -471,6 +471,7 @@ class LedgerState {
         // Dashboard preferences
         this.dashboardPeriod = "monthly";
         this.dashboardChartType = "bar";
+        this.dashboardMetric = "all";
 
         // Trial Balance preferences
         this.trialBalanceDate = LedgerUtils.today();
@@ -854,6 +855,7 @@ class LedgerState {
 
         this.dashboardPeriod = "monthly";
         this.dashboardChartType = "bar";
+        this.dashboardMetric = "all";
 
         this.trialBalanceDate = LedgerUtils.today();
 
@@ -1826,7 +1828,10 @@ class LedgerAccounting {
     static periodChart(state, period = "monthly") {
 
         const validPeriods = [
+            "daily",
+            "weekly",
             "monthly",
+            "monthly24",
             "quarterly",
             "yearly"
         ];
@@ -1835,13 +1840,28 @@ class LedgerAccounting {
             period = "monthly";
         }
 
-        const now = new Date();
-
         const count = {
+            daily: 30,
+            weekly: 12,
             monthly: 12,
+            monthly24: 24,
             quarterly: 8,
             yearly: 5
         }[period];
+
+        // "last 24 months" is the monthly chart with more columns
+        if (period === "monthly24") period = "monthly";
+
+        const now = new Date();
+
+        const pad = n => String(n).padStart(2, "0");
+
+        const dayKey = d =>
+            `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+
+        // Monday of the week containing a date
+        const weekStart = d =>
+            new Date(d.getFullYear(), d.getMonth(), d.getDate() - ((d.getDay() + 6) % 7));
 
         const periods = [];
 
@@ -1850,7 +1870,22 @@ class LedgerAccounting {
 
             let start;
 
-            if (period === "monthly") {
+            if (period === "daily") {
+
+                start = new Date(
+                    now.getFullYear(), now.getMonth(), now.getDate() - i
+                );
+
+            } else if (period === "weekly") {
+
+                const thisWeek = weekStart(now);
+
+                start = new Date(
+                    thisWeek.getFullYear(), thisWeek.getMonth(),
+                    thisWeek.getDate() - i * 7
+                );
+
+            } else if (period === "monthly") {
 
                 start = new Date(
                     now.getFullYear(),
@@ -1883,7 +1918,16 @@ class LedgerAccounting {
             let key;
             let label;
 
-            if (period === "monthly") {
+            if (period === "daily" || period === "weekly") {
+
+                key = dayKey(start);
+
+                label = (period === "weekly" ? "Wk " : "") +
+                    start.toLocaleString("en-PH", {
+                        month: "short", day: "numeric"
+                    });
+
+            } else if (period === "monthly") {
 
                 const month = String(
                     start.getMonth() + 1
@@ -1940,7 +1984,15 @@ class LedgerAccounting {
 
             let key;
 
-            if (period === "monthly") {
+            if (period === "daily") {
+
+                key = dayKey(date);
+
+            } else if (period === "weekly") {
+
+                key = dayKey(weekStart(date));
+
+            } else if (period === "monthly") {
 
                 key =
                     `${date.getFullYear()}-${String(
@@ -3952,6 +4004,8 @@ class LedgerDashboardChart {
         const isArea =
             chartType === "area";
 
+        const metric = this.state.dashboardMetric || "all";
+
         let data;
 
 
@@ -4075,6 +4129,60 @@ class LedgerDashboardChart {
             };
         }
 
+        // Which lines to show (not used by the doughnut)
+        if (!isDoughnut && metric !== "all") {
+
+            const sets = data.datasets;
+
+            const byLabel = name => sets.find(d => d.label === name);
+
+            if (metric === "incomeExpenses") {
+
+                data.datasets = [byLabel("Income"), byLabel("Expenses")];
+
+            } else if (metric === "profit") {
+
+                data.datasets = [byLabel("Net Profit")];
+
+            } else if (metric === "income") {
+
+                data.datasets = [byLabel("Income")];
+
+            } else if (metric === "expenses") {
+
+                data.datasets = [byLabel("Expenses")];
+
+            } else if (metric === "margin") {
+
+                const margin = byLabel("Net Profit");
+
+                margin.label = "Profit margin (%)";
+
+                margin.data = financialData.map(item =>
+                    item.income > 0
+                        ? Math.round(item.profit / item.income * 1000) / 10
+                        : 0
+                );
+
+                data.datasets = [margin];
+
+            } else if (metric === "cumulative") {
+
+                const running = byLabel("Net Profit");
+
+                running.label = "Cumulative profit";
+
+                let total = 0;
+
+                running.data = profit.map(value => {
+                    total += value;
+                    return Math.round(total * 100) / 100;
+                });
+
+                data.datasets = [running];
+            }
+        }
+
         return {
 
             data,
@@ -4099,6 +4207,10 @@ class LedgerDashboardChart {
     // -----------------------------------------------------
 
     getOptions(chartType) {
+
+        const isPercent =
+            (this.state.dashboardMetric || "all") === "margin" &&
+            chartType !== "doughnut";
 
         const isDoughnut =
             chartType === "doughnut";
@@ -4150,6 +4262,10 @@ class LedgerDashboardChart {
                             } else {
 
                                 value = context.parsed.y;
+                            }
+
+                            if (isPercent) {
+                                return `${context.dataset.label}: ${value}%`;
                             }
 
                             return `${context.dataset.label}: ${LedgerUtils.peso(value)}`;
@@ -4243,6 +4359,13 @@ class LedgerDashboardChart {
             }
 
         };
+
+        if (isPercent) {
+
+            const axis = isHorizontal ? options.scales.x : options.scales.y;
+
+            axis.ticks = { callback: value => `${value}%` };
+        }
 
         return options;
     }
@@ -4394,7 +4517,13 @@ class LedgerDashboardChart {
 
         const periodNames = {
 
+            daily: "Daily · Last 30 days",
+
+            weekly: "Weekly · Last 12 weeks",
+
             monthly: "Monthly · Last 12 months",
+
+            monthly24: "Monthly · Last 24 months",
 
             quarterly: "Quarterly · Last 8 quarters",
 
@@ -4402,6 +4531,24 @@ class LedgerDashboardChart {
 
         };
 
+
+        const metricNames = {
+
+            all: "Income, expenses and profit",
+
+            incomeExpenses: "Income and expenses",
+
+            income: "Income only",
+
+            expenses: "Expenses only",
+
+            profit: "Net profit only",
+
+            margin: "Profit margin",
+
+            cumulative: "Cumulative profit"
+
+        };
 
         const chartNames = {
 
@@ -4421,7 +4568,7 @@ class LedgerDashboardChart {
         if (caption) {
 
             caption.textContent =
-                `${periodNames[period]} · ${chartNames[chartType]} · Posted transactions only`;
+                `${periodNames[period]} · ${chartNames[chartType]} · ${metricNames[this.state.dashboardMetric || "all"]} · Posted transactions only`;
         }
 
 
@@ -4689,6 +4836,15 @@ class LedgerView {
 
                             <select id="dashboardPeriod">
 
+                                ${[
+                                    ["daily", "Daily (last 30 days)"],
+                                    ["weekly", "Weekly (last 12 weeks)"]
+                                ].map(([value, text]) => `
+                                <option value="${value}"
+                                    ${this.state.dashboardPeriod === value ? "selected" : ""}>
+                                    ${text}
+                                </option>`).join("")}
+
                                 <option
                                     value="monthly"
                                     ${
@@ -4698,6 +4854,17 @@ class LedgerView {
                                     }
                                 >
                                     Monthly
+                                </option>
+
+                                <option
+                                    value="monthly24"
+                                    ${
+                                        this.state.dashboardPeriod === "monthly24"
+                                            ? "selected"
+                                            : ""
+                                    }
+                                >
+                                    Monthly (last 24 months)
                                 </option>
 
                                 <option
@@ -4721,6 +4888,31 @@ class LedgerView {
                                 >
                                     Yearly
                                 </option>
+
+                            </select>
+
+                        </label>
+
+
+                        <label>
+
+                            SHOW
+
+                            <select id="dashboardMetric">
+
+                                ${[
+                                    ["all", "Income, expenses and profit"],
+                                    ["incomeExpenses", "Income and expenses"],
+                                    ["income", "Income only"],
+                                    ["expenses", "Expenses only"],
+                                    ["profit", "Net profit only"],
+                                    ["margin", "Profit margin (%)"],
+                                    ["cumulative", "Cumulative profit"]
+                                ].map(([value, text]) => `
+                                <option value="${value}"
+                                    ${(this.state.dashboardMetric || "all") === value ? "selected" : ""}>
+                                    ${text}
+                                </option>`).join("")}
 
                             </select>
 
@@ -13858,6 +14050,17 @@ ${errors.length > 10
 
                 this.state.dashboardPeriod =
                     event.target.value;
+
+                this.dashboardChart.render();
+
+            });
+
+
+        // Dashboard lines to show
+        document.getElementById("dashboardMetric")
+            ?.addEventListener("change", event => {
+
+                this.state.dashboardMetric = event.target.value;
 
                 this.dashboardChart.render();
 
