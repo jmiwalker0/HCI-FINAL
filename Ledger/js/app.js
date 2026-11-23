@@ -379,6 +379,10 @@ class LedgerState {
 
         // Trial Balance preferences
         this.trialBalanceDate = LedgerUtils.today();
+
+        // Financial Statements period (defaults to this year so far)
+        this.statementStart = LedgerUtils.today().slice(0, 4) + "-01-01";
+        this.statementEnd = LedgerUtils.today();
     }
 
     setTransactions(transactions) {
@@ -518,6 +522,10 @@ class LedgerState {
         this.dashboardChartType = "bar";
 
         this.trialBalanceDate = LedgerUtils.today();
+
+        // Financial Statements period (defaults to this year so far)
+        this.statementStart = LedgerUtils.today().slice(0, 4) + "-01-01";
+        this.statementEnd = LedgerUtils.today();
     }
 }
 
@@ -1372,6 +1380,320 @@ class LedgerAccounting {
     // =====================================================
     // TRIAL BALANCE
     // =====================================================
+
+    // -----------------------------------------------------
+    // FINANCIAL STATEMENTS
+    // Built from the same posted journal lines as the ledger
+    // and trial balance. Income Statement and Owner's Equity
+    // cover startDate..endDate; the Balance Sheet is as of endDate.
+    // -----------------------------------------------------
+
+    static financialStatements(state, startDate, endDate) {
+
+        const round = value => {
+            const rounded = Math.round(value * 100) / 100;
+            return rounded === 0 ? 0 : rounded;
+        };
+
+        const isCogs = name =>
+            /cost of (goods|sales)/i.test(name);
+
+        const isDrawing = name =>
+            /drawing|withdraw/i.test(name);
+
+        // account -> debit/credit totals before the period and within it
+        const accounts = new Map();
+
+        state.getPostedTransactions().forEach(transaction => {
+
+            if (!transaction.date || transaction.date > endDate) return;
+
+            const bucket =
+                transaction.date < startDate ? "before" : "during";
+
+            state.getJournalLines(transaction).forEach(line => {
+
+                const name = String(line.account || "").trim();
+
+                if (!name) return;
+
+                const key = name.toLowerCase();
+
+                if (!accounts.has(key)) {
+
+                    accounts.set(key, {
+                        name,
+                        type:
+                            line.accountType ||
+                            LedgerUtils.accountTypeFor(name),
+                        before: { debit: 0, credit: 0 },
+                        during: { debit: 0, credit: 0 }
+                    });
+                }
+
+                const entry = accounts.get(key);
+
+                entry[bucket].debit += Number(line.debit) || 0;
+                entry[bucket].credit += Number(line.credit) || 0;
+            });
+        });
+
+        const list = [...accounts.values()];
+
+        // Balance in the account's normal direction.
+        const debitBalance = (a, ...buckets) =>
+            buckets.reduce(
+                (sum, b) => sum + a[b].debit - a[b].credit, 0
+            );
+
+        const creditBalance = (a, ...buckets) =>
+            -debitBalance(a, ...buckets);
+
+        const byName = (a, b) => {
+            if (/^cash$/i.test(a.label)) return -1;
+            if (/^cash$/i.test(b.label)) return 1;
+            return a.label.localeCompare(b.label);
+        };
+
+        const linesFor = (type, balanceFn, filter = () => true) =>
+            list
+                .filter(a => a.type === type && filter(a.name))
+                .map(a => ({
+                    label: a.name,
+                    amount: round(balanceFn(a))
+                }))
+                .filter(row => row.amount !== 0)
+                .sort(byName);
+
+        const sum = rows =>
+            round(rows.reduce((total, row) => total + row.amount, 0));
+
+        // ---------------- Income Statement (period) ----------------
+        const revenue = linesFor(
+            "revenue", a => creditBalance(a, "during")
+        );
+
+        const cogs = linesFor(
+            "expense",
+            a => debitBalance(a, "during"),
+            name => isCogs(name)
+        );
+
+        const operating = linesFor(
+            "expense",
+            a => debitBalance(a, "during"),
+            name => !isCogs(name)
+        );
+
+        const totalRevenue = sum(revenue);
+        const totalCogs = sum(cogs);
+        const grossProfit = round(totalRevenue - totalCogs);
+        const totalOperating = sum(operating);
+        const netIncome = round(grossProfit - totalOperating);
+
+        const incomeRows = [
+            { kind: "section", label: "Revenue" },
+            ...revenue.map(r => ({ kind: "line", ...r })),
+            { kind: "total", label: "Total revenue", amount: totalRevenue }
+        ];
+
+        if (cogs.length) {
+
+            incomeRows.push(
+                { kind: "section", label: "Cost of goods sold" },
+                ...cogs.map(r => ({ kind: "line", ...r })),
+                {
+                    kind: "total",
+                    label: "Total cost of goods sold",
+                    amount: totalCogs
+                },
+                { kind: "total", label: "Gross profit", amount: grossProfit }
+            );
+        }
+
+        incomeRows.push(
+            { kind: "section", label: "Operating expenses" },
+            ...operating.map(r => ({ kind: "line", ...r })),
+            {
+                kind: "total",
+                label: "Total operating expenses",
+                amount: totalOperating
+            },
+            {
+                kind: "grand",
+                label: netIncome < 0 ? "Net loss" : "Net income",
+                amount: netIncome
+            }
+        );
+
+        // ---------------- Owner's Equity (period) ------------------
+        const capitalAccounts = list.filter(
+            a => a.type === "equity" && !isDrawing(a.name)
+        );
+
+        const drawingAccounts = list.filter(
+            a => a.type === "equity" && isDrawing(a.name)
+        );
+
+        // Net income earned before this period (nothing has been closed yet)
+        const incomeBefore = round(
+            list.filter(a => a.type === "revenue")
+                .reduce((t, a) => t + creditBalance(a, "before"), 0)
+            - list.filter(a => a.type === "expense")
+                .reduce((t, a) => t + debitBalance(a, "before"), 0)
+        );
+
+        const capitalBefore = round(
+            capitalAccounts.reduce(
+                (t, a) => t + creditBalance(a, "before"), 0
+            )
+        );
+
+        const drawingsBefore = round(
+            drawingAccounts.reduce(
+                (t, a) => t + debitBalance(a, "before"), 0
+            )
+        );
+
+        const beginningCapital =
+            round(capitalBefore + incomeBefore - drawingsBefore);
+
+        const investments = round(
+            capitalAccounts.reduce(
+                (t, a) => t + creditBalance(a, "during"), 0
+            )
+        );
+
+        const drawings = round(
+            drawingAccounts.reduce(
+                (t, a) => t + debitBalance(a, "during"), 0
+            )
+        );
+
+        const endingCapital = round(
+            beginningCapital + investments + netIncome - drawings
+        );
+
+        const equityRows = [
+            {
+                kind: "line",
+                label: "Owner's capital, beginning of period",
+                amount: beginningCapital
+            },
+            {
+                kind: "line",
+                label: "Add: Owner's investments",
+                amount: investments
+            },
+            {
+                kind: "line",
+                label: netIncome < 0
+                    ? "Less: Net loss for the period"
+                    : "Add: Net income for the period",
+                amount: netIncome
+            },
+            {
+                kind: "line",
+                label: "Less: Owner's drawings",
+                amount: -drawings
+            },
+            {
+                kind: "grand",
+                label: "Owner's capital, end of period",
+                amount: endingCapital
+            }
+        ];
+
+        // ---------------- Balance Sheet (as of end date) -----------
+        const assets = linesFor(
+            "asset", a => debitBalance(a, "before", "during")
+        );
+
+        const liabilities = linesFor(
+            "liability", a => creditBalance(a, "before", "during")
+        );
+
+        const capitalLines = capitalAccounts
+            .map(a => ({
+                label: a.name,
+                amount: round(creditBalance(a, "before", "during"))
+            }))
+            .filter(row => row.amount !== 0);
+
+        const incomeToDate = round(incomeBefore + netIncome);
+
+        const drawingsToDate = round(drawingsBefore + drawings);
+
+        const totalAssets = sum(assets);
+        const totalLiabilities = sum(liabilities);
+
+        const totalEquity = round(
+            sum(capitalLines) + incomeToDate - drawingsToDate
+        );
+
+        const totalLiabilitiesAndEquity =
+            round(totalLiabilities + totalEquity);
+
+        const difference =
+            round(totalAssets - totalLiabilitiesAndEquity);
+
+        const balanceRows = [
+            { kind: "section", label: "Assets" },
+            ...assets.map(r => ({ kind: "line", ...r })),
+            { kind: "total", label: "Total assets", amount: totalAssets },
+
+            { kind: "section", label: "Liabilities" },
+            ...liabilities.map(r => ({ kind: "line", ...r })),
+            {
+                kind: "total",
+                label: "Total liabilities",
+                amount: totalLiabilities
+            },
+
+            { kind: "section", label: "Owner's equity" },
+            ...capitalLines.map(r => ({ kind: "line", ...r })),
+            {
+                kind: "line",
+                label: incomeToDate < 0
+                    ? "Net loss to date"
+                    : "Net income to date",
+                amount: incomeToDate
+            },
+            {
+                kind: "line",
+                label: "Less: Owner's drawings to date",
+                amount: -drawingsToDate
+            },
+            {
+                kind: "total",
+                label: "Total owner's equity",
+                amount: totalEquity
+            },
+
+            {
+                kind: "grand",
+                label: "Total liabilities and owner's equity",
+                amount: totalLiabilitiesAndEquity
+            }
+        ];
+
+        return {
+            startDate,
+            endDate,
+            incomeRows,
+            equityRows,
+            balanceRows,
+            netIncome,
+            totalAssets,
+            totalLiabilities,
+            totalEquity,
+            endingCapital,
+            difference,
+            isBalanced: Math.abs(difference) < 0.005,
+            hasData: list.length > 0
+        };
+    }
+
 
     static trialBalance(state, asOfDate = LedgerUtils.today()) {
 
@@ -3727,6 +4049,211 @@ class LedgerView {
     // TRIAL BALANCE
     // =====================================================
 
+    // -----------------------------------------------------
+    // FINANCIAL STATEMENTS
+    // -----------------------------------------------------
+
+    statementTable(rows) {
+
+        const border = "1px solid rgba(128,128,128,.45)";
+
+        return `
+            <div class="table-wrap">
+                <table>
+                    <tbody>
+                        ${rows.map(row => {
+
+                            const label = LedgerUtils.escape(row.label);
+
+                            if (row.kind === "section") {
+                                return `
+                                    <tr>
+                                        <td colspan="2"
+                                            style="font-weight:700;padding-top:14px">
+                                            ${label}
+                                        </td>
+                                    </tr>`;
+                            }
+
+                            const amount = LedgerUtils.peso(row.amount);
+
+                            const style = {
+                                line: "",
+                                total: `font-weight:600;border-top:${border};`,
+                                grand: `font-weight:700;border-top:${border};` +
+                                       `border-bottom:3px double rgba(128,128,128,.6);`
+                            }[row.kind];
+
+                            return `
+                                <tr style="${style}">
+                                    <td style="${
+                                        row.kind === "line"
+                                            ? "padding-left:28px"
+                                            : ""
+                                    }">
+                                        ${label}
+                                    </td>
+                                    <td class="amount"
+                                        style="text-align:right">
+                                        ${amount}
+                                    </td>
+                                </tr>`;
+                        }).join("")}
+                    </tbody>
+                </table>
+            </div>
+        `;
+    }
+
+    financialStatements() {
+
+        const start = this.state.statementStart;
+        const end = this.state.statementEnd;
+
+        const report = LedgerAccounting.financialStatements(
+            this.state, start, end
+        );
+
+        const period =
+            `${LedgerUtils.escape(start)} to ${LedgerUtils.escape(end)}`;
+
+        const statusClass = report.isBalanced ? "positive" : "negative";
+
+        return `
+
+            ${this.heading(
+                "Financial Statements",
+                "Income Statement, Statement of Owner's Equity and Balance Sheet, prepared from your posted journal entries.",
+                `
+                    <button
+                        class="btn secondary"
+                        id="exportStatements"
+                        type="button"
+                    >
+                        ↓ Export CSV
+                    </button>
+                `
+            )}
+
+
+            <div class="card trial-balance-filter">
+
+                <label for="statementStart">
+                    <span class="trial-balance-filter-label">
+                        PERIOD START
+                    </span>
+                    <input
+                        type="date"
+                        id="statementStart"
+                        value="${LedgerUtils.escape(start)}"
+                        max="${LedgerUtils.escape(end)}"
+                    >
+                </label>
+
+                <label for="statementEnd">
+                    <span class="trial-balance-filter-label">
+                        PERIOD END / BALANCE SHEET DATE
+                    </span>
+                    <input
+                        type="date"
+                        id="statementEnd"
+                        value="${LedgerUtils.escape(end)}"
+                        min="${LedgerUtils.escape(start)}"
+                        max="${LedgerUtils.today()}"
+                    >
+                </label>
+
+                <div class="trial-balance-date-note">
+                    The Income Statement and Owner's Equity cover
+                    <strong>${period}</strong>.
+                    The Balance Sheet shows balances at the end date.
+                    Transactions marked NEEDS REVIEW are excluded.
+                </div>
+
+            </div>
+
+
+            <div class="grid metric-grid">
+
+                ${this.metric(
+                    report.netIncome < 0 ? "NET LOSS" : "NET INCOME",
+                    LedgerUtils.peso(report.netIncome),
+                    "For the selected period",
+                    "↗"
+                )}
+
+                ${this.metric(
+                    "TOTAL ASSETS",
+                    LedgerUtils.peso(report.totalAssets),
+                    "At the end date",
+                    "▥"
+                )}
+
+                ${this.metric(
+                    "OWNER'S EQUITY",
+                    LedgerUtils.peso(report.totalEquity),
+                    "At the end date",
+                    "＝"
+                )}
+
+            </div>
+
+
+            <div class="card" style="margin-top:16px">
+
+                <p class="eyebrow">BALANCE CHECK</p>
+
+                <h3 class="${statusClass}">
+                    ${
+                        !report.hasData
+                            ? "NO DATA FOR THIS PERIOD"
+                            : report.isBalanced
+                                ? "ASSETS = LIABILITIES + OWNER'S EQUITY"
+                                : "BALANCE SHEET DOES NOT BALANCE"
+                    }
+                </h3>
+
+                <p class="tiny muted">
+                    ${
+                        report.hasData && !report.isBalanced
+                            ? `Difference: ${LedgerUtils.peso(report.difference)}. Check your journal entries on the Journal Entries page.`
+                            : "Total assets equal total liabilities plus owner's equity."
+                    }
+                </p>
+
+            </div>
+
+
+            <div class="card table-card" style="margin-top:16px">
+                <div class="card-head">
+                    <h3>Income Statement</h3>
+                    <span class="tiny muted">For the period ${period}</span>
+                </div>
+                ${this.statementTable(report.incomeRows)}
+            </div>
+
+
+            <div class="card table-card" style="margin-top:16px">
+                <div class="card-head">
+                    <h3>Statement of Owner's Equity</h3>
+                    <span class="tiny muted">For the period ${period}</span>
+                </div>
+                ${this.statementTable(report.equityRows)}
+            </div>
+
+
+            <div class="card table-card" style="margin-top:16px">
+                <div class="card-head">
+                    <h3>Balance Sheet</h3>
+                    <span class="tiny muted">As of ${LedgerUtils.escape(end)}</span>
+                </div>
+                ${this.statementTable(report.balanceRows)}
+            </div>
+
+        `;
+    }
+
+
     trialBalance() {
 
         const asOfDate =
@@ -5217,6 +5744,8 @@ class LedgerView {
 
             trialBalance: () => this.trialBalance(),
 
+            financialStatements: () => this.financialStatements(),
+
             receipts: () => this.receipts(),
 
             inventory: () => this.inventory(),
@@ -5264,6 +5793,8 @@ class LedgerApp {
 
 
             trialBalance: "Trial Balance",
+
+            financialStatements: "Financial Statements",
 
             receipts: "Receipts",
 
@@ -6497,6 +7028,126 @@ ${errors.length > 10
 
 
     // -----------------------------------------------------
+    // FINANCIAL STATEMENTS PERIOD + EXPORT
+    // -----------------------------------------------------
+
+    updateStatementPeriod() {
+
+        const start = document.getElementById("statementStart")?.value;
+        const end = document.getElementById("statementEnd")?.value;
+
+        if (!start || !end) {
+
+            LedgerUtils.toast(
+                "Choose both a start and an end date.",
+                "error"
+            );
+
+            return;
+        }
+
+        if (end > LedgerUtils.today()) {
+
+            LedgerUtils.toast(
+                "The end date cannot be in the future.",
+                "error"
+            );
+
+            return;
+        }
+
+        if (start > end) {
+
+            LedgerUtils.toast(
+                "The start date must be on or before the end date.",
+                "error"
+            );
+
+            return;
+        }
+
+        this.state.statementStart = start;
+        this.state.statementEnd = end;
+
+        this.render("financialStatements");
+    }
+
+    exportStatementsCSV() {
+
+        const report = LedgerAccounting.financialStatements(
+            this.state,
+            this.state.statementStart,
+            this.state.statementEnd
+        );
+
+        const rows = [];
+
+        const addStatement = (title, subtitle, statementRows) => {
+
+            rows.push([title, subtitle, ""]);
+
+            statementRows.forEach(row => {
+                rows.push([
+                    "",
+                    row.label,
+                    row.kind === "section"
+                        ? ""
+                        : row.amount.toFixed(2)
+                ]);
+            });
+
+            rows.push(["", "", ""]);
+        };
+
+        const period =
+            `${report.startDate} to ${report.endDate}`;
+
+        addStatement(
+            "Income Statement", `For the period ${period}`,
+            report.incomeRows
+        );
+
+        addStatement(
+            "Statement of Owner's Equity", `For the period ${period}`,
+            report.equityRows
+        );
+
+        addStatement(
+            "Balance Sheet", `As of ${report.endDate}`,
+            report.balanceRows
+        );
+
+        const csv = [["Statement", "Line", "Amount"], ...rows]
+            .map(row =>
+                row.map(value => LedgerUtils.csvEscape(value)).join(",")
+            )
+            .join("\r\n");
+
+        const blob = new Blob(
+            ["\uFEFF", csv],
+            { type: "text/csv;charset=utf-8;" }
+        );
+
+        const url = URL.createObjectURL(blob);
+
+        const link = document.createElement("a");
+
+        link.href = url;
+
+        link.download =
+            `ledger-financial-statements-${report.startDate}-to-${report.endDate}.csv`;
+
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+
+        URL.revokeObjectURL(url);
+
+        LedgerUtils.toast("Financial Statements exported successfully.");
+    }
+
+
+    // -----------------------------------------------------
     // EXPORT TRIAL BALANCE CSV
     // -----------------------------------------------------
 
@@ -7475,6 +8126,20 @@ ${errors.length > 10
 
                 this.dashboardChart.render();
 
+            });
+
+
+        // Financial Statements period + export
+        ["statementStart", "statementEnd"].forEach(id => {
+            document.getElementById(id)
+                ?.addEventListener("change", () => {
+                    this.updateStatementPeriod();
+                });
+        });
+
+        document.getElementById("exportStatements")
+            ?.addEventListener("click", () => {
+                this.exportStatementsCSV();
             });
 
 
