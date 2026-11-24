@@ -1,5 +1,4 @@
-
-name: Deploy Ledger to GitHub Pages
+name: Deploy website
 
 on:
   push:
@@ -16,32 +15,21 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  deploy:
+  build:
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: Ledger        # <- the folder that contains index.html, js/, css/, images/
 
+  deploy:
+    needs: build            # without this the deploy can run before any upload exists
+    runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Prepare static website
-        run: |
-          mkdir -p public
-          cp -r Ledger/. public/
-          rm -rf public/backend
-          rm -rf public/node_modules
-          rm -f public/package.json
-          rm -f public/package-lock.json
-          touch public/.nojekyll
-
-      - name: Upload website
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: public
-
-      - name: Deploy website
-        id: deployment
+      - id: deployment
         uses: actions/deploy-pages@v4
