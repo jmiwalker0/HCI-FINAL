@@ -20,7 +20,7 @@ router.get("/", async (req, res) => {
         const userId = userIdOf(req);
 
         const details = await db.query(
-            `SELECT transaction_id, party_name, initial_paid::float8 AS initial_paid
+            `SELECT transaction_id, party_name, initial_paid::float8 AS initial_paid, custom_lines
              FROM transaction_details WHERE user_id = $1`, [userId]);
 
         const payments = await db.query(
@@ -55,6 +55,30 @@ router.post("/", async (req, res) => {
     }
     if (!description) return res.status(400).json({ error: "Add a description." });
 
+    // Optional hand-edited entry: must balance and be well-formed.
+    let custom = null;
+
+    if (Array.isArray(b.journal_lines) && b.journal_lines.length) {
+
+        custom = b.journal_lines.map(l => ({
+            account: String(l.account || "").trim().slice(0, 150),
+            accountType: ["asset", "liability", "equity", "revenue", "expense"].includes(l.accountType) ? l.accountType : "asset",
+            description: String(l.description || "").slice(0, 500),
+            debit: round2(l.debit || 0),
+            credit: round2(l.credit || 0)
+        }));
+
+        const dr = round2(custom.reduce((n, l) => n + l.debit, 0));
+        const cr = round2(custom.reduce((n, l) => n + l.credit, 0));
+
+        if (custom.some(l => !l.account || l.debit < 0 || l.credit < 0 || (l.debit > 0 && l.credit > 0))) {
+            return res.status(400).json({ error: "Each accounting line needs an account and either a debit or a credit." });
+        }
+        if (!(dr > 0) || Math.abs(dr - cr) > 0.004) {
+            return res.status(400).json({ error: `Debits (${dr.toFixed(2)}) and credits (${cr.toFixed(2)}) must be equal.` });
+        }
+    }
+
     const client = await db.connect();
 
     try {
@@ -70,9 +94,9 @@ router.post("/", async (req, res) => {
         );
 
         await client.query(
-            `INSERT INTO transaction_details (transaction_id, user_id, party_name, initial_paid)
-             VALUES ($1, $2, $3, $4)`,
-            [t.rows[0].id, userId, party, paid]
+            `INSERT INTO transaction_details (transaction_id, user_id, party_name, initial_paid, custom_lines)
+             VALUES ($1, $2, $3, $4, $5)`,
+            [t.rows[0].id, userId, party, paid, custom ? JSON.stringify(custom) : null]
         );
 
         await client.query("COMMIT");
@@ -164,6 +188,75 @@ router.delete("/payments/:id", async (req, res) => {
     } catch (e) {
         console.error(e);
         res.status(500).json({ error: "Could not delete the payment." });
+    }
+});
+
+// Import many transactions at once (CSV import). All rows in one request are
+// saved together or not at all, so a bad row never leaves a half-imported file.
+router.post("/bulk", async (req, res) => {
+
+    const userId = userIdOf(req);
+    const list = Array.isArray(req.body?.transactions) ? req.body.transactions : null;
+
+    if (!list || !list.length) return res.status(400).json({ error: "No transactions were sent." });
+    if (list.length > 500) return res.status(400).json({ error: "Send at most 500 transactions per request." });
+
+    const rows = [];
+
+    for (let i = 0; i < list.length; i++) {
+
+        const b = list[i] || {};
+        const amount = round2(b.amount);
+        const paid = round2(b.paid_amount ?? b.amount);
+        const label = `Row ${i + 1}: `;
+
+        if (!isDate(b.date)) return res.status(400).json({ error: label + "invalid date." });
+        if (!TYPES.includes(b.type)) return res.status(400).json({ error: label + "unknown type." });
+        if (!b.category) return res.status(400).json({ error: label + "missing category." });
+        if (!(amount > 0)) return res.status(400).json({ error: label + "amount must be greater than zero." });
+        if (!(paid >= 0) || paid > amount) return res.status(400).json({ error: label + "amount paid must be between 0 and the total." });
+
+        rows.push({
+            date: b.date,
+            type: b.type,
+            category: String(b.category).slice(0, 100),
+            description: (String(b.description || "").trim() || String(b.category)).slice(0, 500),
+            amount,
+            paid,
+            party: String(b.party_name || "").trim().slice(0, 150) || null
+        });
+    }
+
+    const client = await db.connect();
+
+    try {
+        await client.query("BEGIN");
+
+        for (const r of rows) {
+
+            const t = await client.query(
+                `INSERT INTO transactions
+                   (user_id, transaction_date, description, category, type, amount, status)
+                 VALUES ($1, $2, $3, $4, $5, $6, 'approved') RETURNING id`,
+                [userId, r.date, r.description, r.category, r.type, r.amount]
+            );
+
+            await client.query(
+                `INSERT INTO transaction_details (transaction_id, user_id, party_name, initial_paid)
+                 VALUES ($1, $2, $3, $4)`,
+                [t.rows[0].id, userId, r.party, r.paid]
+            );
+        }
+
+        await client.query("COMMIT");
+        res.status(201).json({ imported: rows.length });
+
+    } catch (e) {
+        await client.query("ROLLBACK").catch(() => {});
+        console.error(e);
+        res.status(500).json({ error: e.message || "Could not import the transactions." });
+    } finally {
+        client.release();
     }
 });
 

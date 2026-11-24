@@ -525,7 +525,11 @@ class LedgerState {
                 String(detail.transaction_id),
                 {
                     party_name: detail.party_name || "",
-                    initial_paid: Number(detail.initial_paid) || 0
+                    initial_paid: Number(detail.initial_paid) || 0,
+                    custom_lines: Array.isArray(detail.custom_lines) &&
+                        detail.custom_lines.length
+                        ? detail.custom_lines
+                        : null
                 }
             ])
         );
@@ -583,6 +587,11 @@ class LedgerState {
         if (transaction.isPayment) {
             return LedgerAccounting.journalFor(transaction);
         }
+
+        // An entry the person edited before saving is kept exactly as saved.
+        const custom = this.details.get(String(transaction.id))?.custom_lines;
+
+        if (custom) return custom;
 
         // Entries edited by hand in an older version are kept as saved.
         const saved =
@@ -779,6 +788,14 @@ class LedgerAPI {
         return this.request("/cashbook", {
             method: "POST",
             body: JSON.stringify(body)
+        });
+    }
+
+    async saveCashbookBulk(transactions) {
+
+        return this.request("/cashbook/bulk", {
+            method: "POST",
+            body: JSON.stringify({ transactions })
         });
     }
 
@@ -1621,10 +1638,11 @@ class LedgerCSVImporter {
             key => columns[key] === -1
         );
 
-        // Optional columns, needed only on purchase and sale rows.
+        // Optional columns: who it was with, and how much was paid.
         const optionalAliases = {
-            item: ["item", "itemname", "product"],
-            quantity: ["quantity", "qty"]
+            party: ["party", "customer", "supplier", "customerorsupplier", "name"],
+            paymentstatus: ["paymentstatus", "payment", "paid"],
+            amountpaid: ["amountpaid", "paidamount", "amountpaidsofar"]
         };
 
         Object.entries(optionalAliases).forEach(([key, names]) => {
@@ -1659,14 +1677,6 @@ class LedgerCSVImporter {
             const category = getValue("category");
             const type = getValue("type").toLowerCase();
 
-            const stockEffect = LedgerUtils.stockEffect(type);
-
-            const itemName = getValue("item");
-
-            const quantity = Number(
-                getValue("quantity").replace(/[,\s]/g, "")
-            );
-
             const amountText = getValue("amount")
                 .replace(/^(PHP|₱)\s*/i, "")
                 .replace(/[,\s]/g, "");
@@ -1681,9 +1691,7 @@ class LedgerCSVImporter {
                 );
             }
 
-            if (!description) {
-                errors.push("Missing description.");
-            } else if (description.length > 100) {
+            if (description.length > 100) {
                 errors.push(
                     "Description must be 100 characters or less."
                 );
@@ -1693,11 +1701,55 @@ class LedgerCSVImporter {
                 errors.push("Missing category.");
             }
 
-            if (!Object.keys(LedgerUtils.TRANSACTION_TYPES).includes(type)) {
+            // The type can be one of the four choices, or an older database type.
+            const uiKey = {
+                "money received": "received",
+                "received": "received",
+                "purchase": "purchase",
+                "business expense": "expense",
+                "expense": "expense",
+                "owner contribution / withdrawal": "owner",
+                "owner contribution": "owner",
+                "owner": "owner"
+            }[type];
+
+            const legacy = ["sale", "service_income", "investment", "withdrawal"]
+                .includes(type);
+
+            let dbType = legacy ? type : null;
+
+            let finalCategory = category;
+
+            if (!legacy && uiKey) {
+
+                const config = LedgerUtils.ENTRY_TYPES[uiKey];
+
+                const match = config.categories.find(
+                    item => item.name.toLowerCase() === category.toLowerCase()
+                );
+
+                if (match) {
+
+                    dbType = match.dbType;
+                    finalCategory = match.name;
+
+                } else if (uiKey === "purchase" || uiKey === "expense") {
+
+                    dbType = uiKey;
+
+                } else if (category) {
+
+                    errors.push(
+                        `“${category}” is not a category of ${config.label}. Use: ` +
+                        config.categories.map(item => item.name).join(", ") + "."
+                    );
+                }
+
+            } else if (!legacy) {
+
                 errors.push(
-                    "Type must be one of: " +
-                    Object.keys(LedgerUtils.TRANSACTION_TYPES).join(", ") +
-                    "."
+                    "Type must be one of: Money Received, Purchase, Business Expense, " +
+                    "Owner Contribution / Withdrawal."
                 );
             }
 
@@ -1710,17 +1762,50 @@ class LedgerCSVImporter {
                 );
             }
 
-            if (
-                stockEffect &&
-                (
-                    !itemName ||
-                    !Number.isFinite(quantity) ||
-                    quantity <= 0
-                )
-            ) {
+            // Payment: paid (default), unpaid or partial.
+            const statusText = getValue("paymentstatus").toLowerCase();
+
+            const status = {
+                "": "paid",
+                "paid": "paid",
+                "paid in full": "paid",
+                "unpaid": "unpaid",
+                "not yet paid": "unpaid",
+                "partial": "partial",
+                "partially paid": "partial"
+            }[statusText];
+
+            let paid = amount;
+
+            if (!status) {
+
                 errors.push(
-                    "Purchase and sale rows need an item and a quantity."
+                    "Payment status must be Paid in full, Not yet paid or Partially paid."
                 );
+
+            } else if (["investment", "withdrawal"].includes(dbType) && status !== "paid") {
+
+                errors.push(
+                    "Owner contributions and withdrawals are always paid in full."
+                );
+
+            } else if (status === "unpaid") {
+
+                paid = 0;
+
+            } else if (status === "partial") {
+
+                paid = Number(
+                    getValue("amountpaid")
+                        .replace(/^(PHP|₱)\s*/i, "")
+                        .replace(/[,\s]/g, "")
+                );
+
+                if (!Number.isFinite(paid) || paid <= 0 || paid >= amount) {
+                    errors.push(
+                        "A partially paid row needs an amount_paid that is more than 0 and less than the amount."
+                    );
+                }
             }
 
             if (errors.length) {
@@ -1740,16 +1825,12 @@ class LedgerCSVImporter {
                 transaction: {
 
                     date,
-                    description,
-                    category,
-                    type,
+                    description: description || finalCategory,
+                    category: finalCategory,
+                    type: dbType,
                     amount,
-
-                    ...(stockEffect
-                        ? { item_name: itemName, quantity }
-                        : {}),
-
-                    status: "approved"
+                    party_name: getValue("party"),
+                    paid_amount: paid
 
                 }
 
@@ -1769,24 +1850,32 @@ class LedgerCSVImporter {
 
     static createTemplate() {
 
-        // Amount is the TOTAL for the row. Item and quantity are only
-        // needed for purchase and sale. List purchases before the sales
-        // that use that stock.
+        // amount is the TOTAL. type is one of: Money Received, Purchase,
+        // Business Expense, Owner Contribution / Withdrawal.
+        // party, payment_status and amount_paid are optional:
+        //   payment_status = Paid in full (default) | Not yet paid | Partially paid
+        //   amount_paid is only needed for Partially paid.
         const rows = [
 
-            ["date", "description", "category", "type", "amount", "item", "quantity"],
+            ["date", "description", "category", "type", "amount", "party", "payment_status", "amount_paid"],
 
-            ["2026-11-01", "Office supplies", "Office Supplies", "expense", "1500.00", "", ""],
+            ["2026-11-01", "Owner investment", "Owner Investment", "Owner Contribution / Withdrawal", "50000.00", "", "", ""],
 
-            ["2026-11-02", "Owner capital contribution", "Owner's Investment", "investment", "20000.00", "", ""],
+            ["2026-11-02", "Product sale to Maria", "Product Sale", "Money Received", "10000.00", "Maria Santos", "Paid in full", ""],
 
-            ["2026-11-03", "Bought notebooks for resale", "Inventory Purchase", "purchase", "6000.00", "Notebook", "100"],
+            ["2026-11-03", "Design work for Reyes", "Service Income", "Money Received", "8000.00", "Reyes Trading", "Partially paid", "3000.00"],
 
-            ["2026-11-04", "Sold notebooks", "Sales Revenue", "sale", "2500.00", "Notebook", "25"],
+            ["2026-11-04", "Consulting for Cruz", "Other Income", "Money Received", "2500.00", "Cruz Enterprises", "Not yet paid", ""],
 
-            ["2026-11-05", "Design consultation", "Service Revenue", "service_income", "3000.00", "", ""],
+            ["2026-11-05", "Notebooks for resale", "Inventory", "Purchase", "6000.00", "Metro Paper Supply", "Not yet paid", ""],
 
-            ["2026-11-06", "Owner cash withdrawal", "Owner's Withdrawal", "withdrawal", "3000.00", "", ""]
+            ["2026-11-06", "Printer", "Equipment", "Purchase", "15000.00", "Tech Depot", "Partially paid", "5000.00"],
+
+            ["2026-11-07", "Office rent", "Rent", "Business Expense", "25000.00", "", "Paid in full", ""],
+
+            ["2026-11-08", "Electricity", "Utilities", "Business Expense", "5200.00", "PowerGrid Utilities", "Not yet paid", ""],
+
+            ["2026-11-09", "Owner cash withdrawal", "Owner Withdrawal", "Owner Contribution / Withdrawal", "3000.00", "", "", ""]
 
         ];
 
@@ -2552,10 +2641,74 @@ class LedgerView {
             </div>
 
 
+            ${this.attentionCard()}
+
             <!-- RECENT TRANSACTIONS -->
 
             ${this.transactionTable(recent)}
 
+        `;
+    }
+
+
+    // Items that need a second look: overdue balances and flagged entries.
+    attentionCard() {
+
+        const today = LedgerUtils.today();
+
+        const daysOld = date =>
+            Math.floor((Date.parse(today) - Date.parse(date)) / 86400000);
+
+        const items = [];
+
+        this.state.transactions
+            .filter(item => item.status === "review")
+            .forEach(item => items.push({
+                title: item.description,
+                note: `Flagged for review · ${LedgerUtils.peso(item.amount)}`
+            }));
+
+        LedgerCash.outstanding(this.state)
+            .filter(item => daysOld(item.transaction.date) > 30)
+            .sort((a, b) => b.balance - a.balance)
+            .forEach(item => items.push({
+                title: item.transaction.description,
+                note:
+                    `${LedgerUtils.peso(item.balance)} ` +
+                    (item.dir === "in" ? "still owed to you" : "still owed by you") +
+                    ` for ${daysOld(item.transaction.date)} days` +
+                    (item.party ? ` · ${item.party}` : "")
+            }));
+
+        return `
+            <div class="card" style="margin-bottom:16px">
+
+                <div class="card-head">
+                    <h3>Needs your attention</h3>
+                    <button class="btn ghost small" data-goto="outstanding">
+                        Open unpaid transactions
+                    </button>
+                </div>
+
+                ${
+                    items.length
+                        ? items.slice(0, 4).map(item => `
+                            <div class="attention-item">
+                                <span class="warning-icon">!</span>
+                                <div>
+                                    <strong>${LedgerUtils.escape(item.title)}</strong>
+                                    <p>${LedgerUtils.escape(item.note)}</p>
+                                </div>
+                            </div>`).join("") +
+                          (items.length > 4
+                              ? `<p class="tiny muted">and ${items.length - 4} more</p>`
+                              : "")
+                        : `<p class="muted tiny">
+                               Nothing needs attention. No balances are overdue.
+                           </p>`
+                }
+
+            </div>
         `;
     }
 
@@ -2628,8 +2781,11 @@ class LedgerView {
 
                 <strong>Import transactions using CSV.</strong>
 
-                Upload a CSV file containing date, description,
-                category, type, and amount.
+                Required columns: date, description, category, type, amount.
+                Optional columns: party (customer or supplier),
+                payment_status (Paid in full, Not yet paid or Partially paid)
+                and amount_paid (for partially paid rows).
+                Download the CSV template for an example of every option.
 
                 Use YYYY-MM-DD for transaction dates.
 
@@ -4377,11 +4533,35 @@ class LedgerApp {
         if (next) {
             next.textContent =
                 step === "review" ? "Confirm and Save" : "Review →";
+            next.disabled = false;
         }
     }
 
-    // Reads and checks the form. Returns null (after a message) if invalid.
+    // Shows a message beside the field that needs correcting.
+    setFieldError(id, message) {
+
+        const note = document.getElementById("err-" + id);
+        const field = document.getElementById(id);
+
+        if (note) {
+            note.textContent = message || "";
+            note.hidden = !message;
+        }
+
+        field?.classList.toggle("invalid", Boolean(message));
+    }
+
+    clearFieldErrors() {
+        ["txDate", "txAmount", "txPaidAmount"].forEach(
+            id => this.setFieldError(id, "")
+        );
+    }
+
+    // Reads and checks the form. Returns null (after showing what to fix)
+    // if something is missing or wrong.
     readTransactionDraft() {
+
+        this.clearFieldErrors();
 
         const config = LedgerUtils.ENTRY_TYPES[this.txType];
 
@@ -4391,9 +4571,9 @@ class LedgerApp {
 
         const date = document.getElementById("txDate").value;
 
-        const amount = LedgerCash.round(
-            document.getElementById("txAmount").value
-        );
+        const rawAmount = document.getElementById("txAmount").value;
+
+        const amount = LedgerCash.round(rawAmount);
 
         const party = this.txType === "owner"
             ? ""
@@ -4404,18 +4584,34 @@ class LedgerApp {
         const description =
             typed || (category + (party ? " — " + party : ""));
 
-        let status = this.txType === "owner"
+        const status = this.txType === "owner"
             ? "paid"
             : document.getElementById("txPayStatus").value;
 
-        if (!date || !choice) {
-            LedgerUtils.toast("Choose a date and a category.", "error");
-            return null;
+        let firstProblem = null;
+
+        const problem = (id, message) => {
+            this.setFieldError(id, message);
+            firstProblem = firstProblem || id;
+        };
+
+        if (!date) {
+            problem(
+                "txDate",
+                "Transaction date is missing, please enter the transaction date to continue."
+            );
         }
 
-        if (!(amount > 0)) {
-            LedgerUtils.toast("Enter a total amount greater than zero.", "error");
-            return null;
+        if (rawAmount === "" || rawAmount == null) {
+            problem(
+                "txAmount",
+                "Total amount is missing, please enter the total amount to continue."
+            );
+        } else if (!(amount > 0)) {
+            problem(
+                "txAmount",
+                "The total amount must be more than ₱0.00. Check for a typing or decimal-point mistake."
+            );
         }
 
         let paid = amount;
@@ -4424,18 +4620,28 @@ class LedgerApp {
 
         if (status === "partial") {
 
-            paid = LedgerCash.round(
-                document.getElementById("txPaidAmount").value
-            );
+            const rawPaid = document.getElementById("txPaidAmount").value;
 
-            if (!(paid > 0) || paid >= amount) {
-                LedgerUtils.toast(
-                    "For a partial payment, enter an amount paid that is " +
-                    "more than zero and less than the total.",
-                    "error"
+            paid = LedgerCash.round(rawPaid);
+
+            if (rawPaid === "") {
+                problem(
+                    "txPaidAmount",
+                    "Amount paid is missing, please enter the amount paid to continue."
                 );
-                return null;
+            } else if (!(paid > 0) || (amount > 0 && paid >= amount)) {
+                problem(
+                    "txPaidAmount",
+                    "For a partial payment the amount paid must be more than ₱0.00 and less than the total" +
+                    (amount > 0 ? ` (${LedgerUtils.peso(amount)})` : "") +
+                    ". If everything is paid, choose “Paid in full”."
+                );
             }
+        }
+
+        if (firstProblem) {
+            document.getElementById(firstProblem)?.focus();
+            return null;
         }
 
         return {
@@ -4451,16 +4657,74 @@ class LedgerApp {
         };
     }
 
+    // Things worth a second look. They never block saving.
+    transactionWarnings(draft) {
+
+        const warnings = [];
+
+        const same = this.state.transactions.filter(item =>
+            item.date === draft.date &&
+            item.category === draft.category &&
+            Math.abs(item.amount - draft.amount) < 0.005
+        );
+
+        if (same.length) {
+            warnings.push(
+                "A transaction with the same date, category and amount already exists. " +
+                "Saving may record it twice."
+            );
+        }
+
+        if (draft.date > LedgerUtils.today()) {
+            warnings.push(
+                "The date is in the future. Check that the year and month are correct."
+            );
+        }
+
+        const history = this.state.transactions.filter(
+            item => item.category === draft.category
+        );
+
+        if (history.length >= 3) {
+
+            const average =
+                history.reduce((sum, item) => sum + item.amount, 0) /
+                history.length;
+
+            if (draft.amount > average * 3) {
+                warnings.push(
+                    `This amount is much larger than your usual ${draft.category} ` +
+                    `(about ${LedgerUtils.peso(average)}). Check for an extra zero or a misplaced decimal point.`
+                );
+            }
+        }
+
+        if (draft.status !== "paid" && !draft.party) {
+            warnings.push(
+                `Add a ${draft.uiType === "received" ? "customer" : "supplier"} name ` +
+                "so you can tell who this unpaid balance belongs to."
+            );
+        }
+
+        return warnings;
+    }
+
     // The entries LARP will record, shown before anything is saved.
+    // "Edit entries" lets the person change accounts and amounts.
     renderTransactionReview(draft) {
 
-        const lines = LedgerAccounting.journalFor({
-            type: draft.dbType,
-            category: draft.category,
-            description: draft.description,
-            amount: draft.amount,
-            initialPaid: draft.paid
-        });
+        if (!draft.lines) {
+            draft.lines = LedgerAccounting.journalFor({
+                type: draft.dbType,
+                category: draft.category,
+                description: draft.description,
+                amount: draft.amount,
+                initialPaid: draft.paid
+            });
+            draft.edited = false;
+        }
+
+        const lines = draft.lines;
 
         const unpaid = LedgerCash.round(draft.amount - draft.paid);
 
@@ -4471,7 +4735,47 @@ class LedgerApp {
             <tr><th>${label}</th><td>${value}</td></tr>
         `;
 
+        const warnings = this.transactionWarnings(draft);
+
+        const debit = LedgerCash.round(
+            lines.reduce((sum, line) => sum + (Number(line.debit) || 0), 0)
+        );
+
+        const credit = LedgerCash.round(
+            lines.reduce((sum, line) => sum + (Number(line.credit) || 0), 0)
+        );
+
+        const balanced = debit > 0 && Math.abs(debit - credit) < 0.005;
+
+        const editing = Boolean(this.txEditing);
+
+        const entryRows = editing
+            ? lines.map((line, index) => `
+                <tr>
+                    <td><input data-line="${index}" data-field="account"
+                        list="accountNames" value="${LedgerUtils.escape(line.account)}"></td>
+                    <td><input data-line="${index}" data-field="debit" type="number"
+                        min="0" step="0.01" value="${line.debit || ""}"></td>
+                    <td><input data-line="${index}" data-field="credit" type="number"
+                        min="0" step="0.01" value="${line.credit || ""}"></td>
+                </tr>`).join("")
+            : lines.map(line => `
+                <tr>
+                    <td>${LedgerUtils.escape(line.account)}</td>
+                    <td>${line.debit ? LedgerUtils.peso(line.debit) : ""}</td>
+                    <td>${line.credit ? LedgerUtils.peso(line.credit) : ""}</td>
+                </tr>`).join("");
+
         document.getElementById("txReviewBody").innerHTML = `
+
+            ${
+                warnings.length
+                    ? `<div class="warn-box">
+                           <strong>Please check before saving:</strong>
+                           <ul>${warnings.map(w => `<li>${LedgerUtils.escape(w)}</li>`).join("")}</ul>
+                       </div>`
+                    : ""
+            }
 
             <table class="review-table">
                 <tbody>
@@ -4492,27 +4796,105 @@ class LedgerApp {
                 </tbody>
             </table>
 
-            <h4 style="margin:16px 0 6px">Suggested accounting entries</h4>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin:16px 0 6px">
+                <h4>Suggested accounting entries${draft.edited ? " (edited)" : ""}</h4>
+                <span>
+                    <button type="button" class="btn ghost small" id="txEditLines">
+                        ${editing ? "Done editing" : "✎ Edit entries"}
+                    </button>
+                    ${draft.edited ? `<button type="button" class="btn ghost small" id="txResetLines">Reset to suggestion</button>` : ""}
+                </span>
+            </div>
+
+            <p class="tiny muted" style="margin-bottom:6px">
+                A debit is money or value coming in; a credit is money or value going out
+                or what you owe. The two totals must be equal.
+            </p>
 
             <table class="review-table">
                 <thead>
                     <tr><th>Account</th><th>Debit</th><th>Credit</th></tr>
                 </thead>
-                <tbody>
-                    ${lines.map(line => `
-                        <tr>
-                            <td>${LedgerUtils.escape(line.account)}</td>
-                            <td>${line.debit ? LedgerUtils.peso(line.debit) : ""}</td>
-                            <td>${line.credit ? LedgerUtils.peso(line.credit) : ""}</td>
-                        </tr>
-                    `).join("")}
-                </tbody>
+                <tbody>${entryRows}</tbody>
+                <tfoot>
+                    <tr>
+                        <th>Total</th>
+                        <td>${LedgerUtils.peso(debit)}</td>
+                        <td>${LedgerUtils.peso(credit)}</td>
+                    </tr>
+                </tfoot>
             </table>
+
+            ${
+                balanced
+                    ? `<p class="tiny" style="color:var(--green);margin-top:6px">✓ Debits and credits are equal.</p>`
+                    : `<p class="field-error" style="margin-top:6px">Debits and credits must be equal` +
+                      (debit > 0 || credit > 0
+                          ? ` (difference ${LedgerUtils.peso(Math.abs(debit - credit))}). Adjust an amount or press “Reset to suggestion”.`
+                          : `. Enter an amount on at least one line.`) +
+                      `</p>`
+            }
+
+            <datalist id="accountNames">
+                ${["Cash", "Accounts Receivable", "Accounts Payable", "Inventory", "Supplies",
+                   "Equipment", "Sales Revenue", "Service Revenue", "Other Income",
+                   "Rent Expense", "Utilities Expense", "Salaries Expense",
+                   "Advertising Expense", "Repairs and Maintenance Expense", "General Expense",
+                   "Owner's Capital", "Owner's Drawings"]
+                    .map(name => `<option value="${name}"></option>`).join("")}
+            </datalist>
 
             <p class="tiny muted" style="margin-top:8px">
                 Saving updates your cash, journal and ledger automatically.
             </p>
         `;
+
+        document.getElementById("txSubmit").disabled = !balanced;
+
+        document.getElementById("txEditLines")
+            ?.addEventListener("click", () => {
+                this.txEditing = !this.txEditing;
+                this.renderTransactionReview(draft);
+            });
+
+        document.getElementById("txResetLines")
+            ?.addEventListener("click", () => {
+                this.txEditing = false;
+                draft.lines = null;
+                this.renderTransactionReview(draft);
+            });
+
+        document.querySelectorAll("#txReviewBody input[data-line]")
+            .forEach(input => {
+
+                input.addEventListener("change", () => {
+
+                    const line = draft.lines[Number(input.dataset.line)];
+
+                    if (input.dataset.field === "account") {
+
+                        line.account = input.value.trim();
+
+                        line.accountType =
+                            LedgerUtils.accountTypeFor(line.account);
+
+                    } else {
+
+                        line[input.dataset.field] =
+                            LedgerCash.round(input.value || 0);
+
+                        // A line is either a debit or a credit, not both.
+                        const other =
+                            input.dataset.field === "debit" ? "credit" : "debit";
+
+                        if (line[input.dataset.field] > 0) line[other] = 0;
+                    }
+
+                    draft.edited = true;
+
+                    this.renderTransactionReview(draft);
+                });
+            });
     }
 
 
@@ -4533,9 +4915,15 @@ class LedgerApp {
 
             this.txDraft = draft;
 
+            this.txEditing = false;
+
             this.renderTransactionReview(draft);
 
             this.showTransactionStep("review");
+
+            LedgerUtils.toast(
+                "Suggested journal entry is ready. Please review the following details before saving."
+            );
 
             return;
         }
@@ -4553,7 +4941,26 @@ class LedgerApp {
             return;
         }
 
+        // A hand-edited entry must still balance.
+        if (draft.edited) {
+
+            const dr = draft.lines.reduce((n, l) => n + (Number(l.debit) || 0), 0);
+            const cr = draft.lines.reduce((n, l) => n + (Number(l.credit) || 0), 0);
+
+            if (Math.abs(dr - cr) > 0.005 || draft.lines.some(l => !l.account)) {
+
+                LedgerUtils.toast(
+                    "Each accounting line needs an account, and debits must equal credits.",
+                    "error"
+                );
+
+                return;
+            }
+        }
+
         button.disabled = true;
+
+        LedgerUtils.toast("Entry approved. Saving transaction…");
 
         try {
 
@@ -4564,7 +4971,8 @@ class LedgerApp {
                 description: draft.description,
                 amount: draft.amount,
                 party_name: draft.party,
-                paid_amount: draft.paid
+                paid_amount: draft.paid,
+                ...(draft.edited ? { journal_lines: draft.lines } : {})
             });
 
             const saved = result.transaction || result;
@@ -4596,12 +5004,19 @@ class LedgerApp {
                     "error"
                 );
             } else {
-                LedgerUtils.toast("Transaction saved. Your records are updated.");
+                LedgerUtils.toast(
+                    "Transaction saved successfully. Ledger has been updated."
+                );
             }
 
         } catch (error) {
 
-            LedgerUtils.toast(error.message, "error");
+            // The form stays open with everything still filled in.
+            LedgerUtils.toast(
+                "Transaction could not be saved. The details you entered has been retained. " +
+                "Please try again. (" + error.message + ")",
+                "error"
+            );
 
         } finally {
 
@@ -4789,30 +5204,39 @@ Do you want to continue?`;
 
         try {
 
-            // Save transactions individually.
-            for (const item of valid) {
+            // Save in groups of 200. If a group is refused, retry its rows
+            // one by one so only the bad rows are skipped.
+            for (let start = 0; start < valid.length; start += 200) {
+
+                const group = valid.slice(start, start + 200);
 
                 try {
 
-                    await this.api.saveTransaction(
-                        item.transaction
+                    await this.api.saveCashbookBulk(
+                        group.map(item => item.transaction)
                     );
 
-                    importedCount++;
+                    importedCount += group.length;
 
-                } catch (error) {
+                } catch (groupError) {
 
-                    failed.push({
+                    if (!this.api.getToken()) break;
 
-                        rowNumber: item.rowNumber,
+                    for (const item of group) {
 
-                        reason: error.message
+                        try {
 
-                    });
+                            await this.api.saveCashbookBulk([item.transaction]);
 
+                            importedCount++;
 
-                    if (!this.api.getToken()) {
-                        break;
+                        } catch (error) {
+
+                            failed.push({
+                                rowNumber: item.rowNumber,
+                                reason: error.message
+                            });
+                        }
                     }
                 }
             }
@@ -5716,6 +6140,23 @@ ${errors.length > 10
         document.getElementById("txPayStatus")
             ?.addEventListener("change", () => {
                 this.updatePaymentFields();
+            });
+
+        ["txDate", "txAmount", "txPaidAmount"].forEach(id => {
+            document.getElementById(id)
+                ?.addEventListener("input", () => {
+                    this.setFieldError(id, "");
+                });
+        });
+
+        document.getElementById("txReceipt")
+            ?.addEventListener("change", event => {
+                if (event.target.files[0]) {
+                    LedgerUtils.toast(
+                        "Document attached. It is saved with the transaction. " +
+                        "Please enter or check the details above against it."
+                    );
+                }
             });
 
         document.getElementById("txBack")
