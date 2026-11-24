@@ -2,7 +2,8 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#17234A">
   <meta name="theme-color" content="#172554">
 
   <title>LARP — Lucid Accounting Record Program</title>
@@ -52,7 +53,14 @@
     thead .review-table th, .review-table thead th { width: auto; }
     @media (max-width: 560px) { .tx-type-cards { grid-template-columns: 1fr; } }
     [hidden] { display: none !important; }
+    .field-error { display: block; color: var(--red); font-size: .8rem; margin-top: 3px; }
+    .field-error::before { content: "⚠ "; }
+    input.invalid, select.invalid { border-color: var(--red) !important; }
+    .warn-box { border: 1px solid var(--amber); background: var(--amber-bg); color: var(--amber); border-radius: 8px; padding: 8px 12px; margin: 12px 0; font-size: .88rem; }
+    .warn-box ul { margin: 4px 0 0 18px; }
+    .review-table input { width: 100%; padding: 4px 6px; }
 </style>
+  <link rel="stylesheet" href="css/responsive.css">
 </head>
 
 <body>
@@ -278,6 +286,7 @@
       </div>
 
     </aside>
+    <div class="sidebar-scrim" id="sidebarScrim"></div>
 
 
     <!-- ============================= -->
@@ -484,11 +493,13 @@
             <label>
               2. Category
               <select id="txCategory"></select>
+              <small class="form-note">The category tells LARP which accounts to use.</small>
             </label>
 
             <label>
               Transaction date
-              <input type="date" id="txDate" required>
+              <input type="date" id="txDate">
+              <small class="field-error" id="err-txDate" hidden></small>
             </label>
 
             <label>
@@ -499,8 +510,9 @@
                 min="0.01"
                 step="0.01"
                 placeholder="0.00"
-                required
               >
+              <small class="field-error" id="err-txAmount" hidden></small>
+              <small class="form-note">The full amount of the transaction, even if only part of it is paid.</small>
             </label>
 
             <label id="txPartyField">
@@ -534,6 +546,7 @@
                 <option value="unpaid">Not yet paid</option>
                 <option value="partial">Partially paid</option>
               </select>
+              <small class="form-note">Unpaid amounts are tracked under Unpaid Transactions.</small>
             </label>
 
             <label id="txPaidField" hidden>
@@ -545,6 +558,7 @@
                 step="0.01"
                 placeholder="0.00"
               >
+              <small class="field-error" id="err-txPaidAmount" hidden></small>
             </label>
 
           </div>

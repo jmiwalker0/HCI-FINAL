@@ -1,0 +1,216 @@
+/* =========================================================
+   LARP — RESPONSIVE LAYER
+   Loaded last. Phones, tablets, laptops and large screens.
+   Breakpoints: 1400 (wide) · 1050 (small laptop) · 900 (tablet)
+                700 (phone) · 420 (small phone)
+   ========================================================= */
+
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+body { overflow-x: hidden; }
+img, canvas, svg { max-width: 100%; }
+
+/* ---------- Dialogs never grow taller than the screen ---------- */
+.modal { max-height: calc(100vh - 32px); max-height: calc(100dvh - 32px); overflow-y: auto; }
+.modal-actions { position: sticky; bottom: 0; background: #fff; }
+
+/* ---------- Large screens: keep lines readable ---------- */
+@media (min-width: 1400px) {
+    .page-wrap { max-width: 1320px; margin-inline: auto; }
+}
+
+/* ---------- Small laptops ---------- */
+@media (max-width: 1050px) {
+    .topbar { padding: 0 24px; }
+    .page-wrap { padding-inline: 24px; }
+    .metric-grid { grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); }
+}
+
+/* ---------- Tablets and below: sidebar becomes a drawer ---------- */
+.sidebar-scrim { display: none; }
+
+@media (max-width: 900px) {
+
+    .sidebar {
+        position: fixed;
+        z-index: 30;
+        top: 0; bottom: 0; left: 0;
+        width: min(290px, 86vw);
+        transform: translateX(-105%);
+        transition: transform .22s ease;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        padding-bottom: calc(18px + env(safe-area-inset-bottom));
+        box-shadow: none;
+    }
+
+    .sidebar.open {
+        left: 0;
+        transform: none;
+        box-shadow: 10px 0 40px #0f172a33;
+    }
+
+    .sidebar-scrim {
+        position: fixed;
+        inset: 0;
+        z-index: 25;
+        background: #0f172a66;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity .22s ease;
+        display: block;
+    }
+
+    .sidebar.open + .sidebar-scrim { opacity: 1; pointer-events: auto; }
+
+    .mobile-menu {
+        display: grid;
+        place-items: center;
+        width: 44px; height: 44px;
+        margin-left: -8px;
+        font-size: 22px;
+        border-radius: 10px;
+    }
+
+    .topbar {
+        position: sticky; top: 0; z-index: 20;
+        padding-inline: 16px;
+        padding-top: env(safe-area-inset-top);
+        height: calc(60px + env(safe-area-inset-top));
+    }
+
+    .two-col { grid-template-columns: 1fr; }
+    .page-wrap { padding: 22px 18px 40px; }
+}
+
+/* ---------- Phones ---------- */
+@media (max-width: 700px) {
+
+    .page-wrap { padding: 18px 14px calc(40px + env(safe-area-inset-bottom)); }
+
+    .page-heading { gap: 12px; }
+    .page-heading > div:last-child:not(:first-child) { width: 100%; }
+    .page-heading .btn#addTransaction { width: 100%; justify-content: center; }
+    .transaction-heading-actions { grid-template-columns: 1fr 1fr; }
+    .transaction-heading-actions #addTransaction { grid-column: 1 / -1; }
+
+    .metric-grid { grid-template-columns: 1fr; }
+
+    .toolbar { flex-wrap: wrap; gap: 8px; }
+    .toolbar .search, .toolbar select, .toolbar input { flex: 1 1 100%; width: 100%; max-width: 100%; }
+    .toolbar .search input { width: 100%; }
+
+    .chart-container { height: 250px !important; }
+
+    .card-head { flex-wrap: wrap; gap: 8px; }
+
+    /* Forms: 16px text stops iOS Safari zooming in on focus */
+    input, select, textarea { font-size: 16px !important; }
+    .form-grid input, .form-grid select, .form-grid textarea { min-height: 44px; }
+
+    /* Modals become full-height sheets with the actions always visible */
+    .modal-backdrop { padding: 0; place-items: end stretch; }
+    .modal {
+        width: 100%;
+        max-height: 100dvh;
+        max-height: 100svh;
+        overflow-y: auto;
+        border-radius: 16px 16px 0 0;
+        padding: 18px 16px 0;
+        -webkit-overflow-scrolling: touch;
+    }
+    .modal-actions {
+        position: sticky; bottom: 0;
+        background: #fff;
+        margin: 0 -16px;
+        padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+        flex-wrap: wrap;
+    }
+    .modal-actions .btn { flex: 1 1 140px; justify-content: center; }
+
+    .toast-region {
+        left: 12px; right: 12px;
+        bottom: calc(12px + env(safe-area-inset-bottom));
+    }
+    .toast { font-size: 13px; }
+
+    /* Tables turn into one card per row */
+    table.responsive-table, .responsive-table thead, .responsive-table tbody,
+    .responsive-table tr, .responsive-table td { display: block; width: 100%; }
+    .responsive-table thead { position: absolute; left: -9999px; }
+    .responsive-table tr {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 8px 12px;
+        margin-bottom: 10px;
+        background: #fff;
+    }
+    .responsive-table td {
+        display: flex; justify-content: space-between; align-items: flex-start; gap: 14px;
+        border: 0 !important;
+        padding: 6px 0 !important;
+        text-align: right;
+    }
+    .responsive-table td::before {
+        content: attr(data-label);
+        flex: 0 0 38%;
+        text-align: left;
+        font-size: 10px; font-weight: 700; letter-spacing: .04em;
+        color: var(--muted);
+        padding-top: 2px;
+    }
+    .responsive-table td[colspan] { display: block; text-align: center; }
+    .responsive-table td[colspan]::before { content: none; }
+    .responsive-table td:last-child { justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+    .responsive-table td:last-child::before { display: none; }
+    .table-wrap { overflow-x: visible; }
+
+    /* Other tables scroll sideways instead of breaking the page */
+    .table-wrap:has(table:not(.responsive-table)) { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+    /* Journal cards */
+    .journal-row { grid-template-columns: 1.4fr 1fr .8fr .8fr; font-size: 11px; }
+    .review-table { font-size: .85rem; }
+    .review-table input { min-width: 70px; }
+}
+
+/* ---------- Small phones ---------- */
+@media (max-width: 420px) {
+    .brand { font-size: 19px; }
+    .topbar-right #connectionStatus { display: none; }
+    .page-heading h1 { font-size: 20px; }
+    .transaction-heading-actions { grid-template-columns: 1fr; }
+    .journal-row { grid-template-columns: 1fr 1fr; row-gap: 4px; }
+    .journal-row.header { display: none; }
+}
+
+/* ---------- Touch devices: comfortable tap targets ---------- */
+@media (pointer: coarse) {
+    .btn { min-height: 44px; }
+    .btn.small { min-height: 38px; padding-inline: 14px; }
+    .nav-item, .nav-group-title { min-height: 44px; }
+    .icon-btn, #closeModal { min-width: 44px; min-height: 44px; }
+    select, input[type="checkbox"] { min-height: 24px; }
+}
+
+/* ---------- Landscape phones: short screens ---------- */
+@media (max-height: 480px) and (orientation: landscape) {
+    .modal { max-height: 100dvh; overflow-y: auto; border-radius: 12px; }
+    .modal-backdrop { place-items: center; padding: 6px; }
+    .topbar { height: 48px; }
+}
+
+/* ---------- Keyboard users ---------- */
+:focus-visible { outline: 3px solid #3a4a8f66; outline-offset: 2px; }
+
+/* ---------- Respect reduced motion ---------- */
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+}
+
+/* ---------- Printing: just the page ---------- */
+@media print {
+    .sidebar, .sidebar-scrim, .topbar, .toast-region, .modal-backdrop,
+    .btn, .toolbar { display: none !important; }
+    .page-wrap { max-width: none; padding: 0; }
+    .card { box-shadow: none; break-inside: avoid; }
+}

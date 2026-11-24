@@ -2323,24 +2323,24 @@ class LedgerView {
 
             <tr>
 
-                <td>
+                <td data-label="DATE">
                     ${LedgerUtils.escape(transaction.date)}
                 </td>
 
-                <td>
+                <td data-label="DESCRIPTION">
                     <strong>
                         ${LedgerUtils.escape(transaction.description)}
                     </strong>
                 </td>
 
-                <td>
+                <td data-label="TYPE / CATEGORY">
                     ${LedgerUtils.escape(LedgerUtils.typeLabel(transaction.type))}
                     <div class="tiny muted">
                         ${LedgerUtils.escape(transaction.category)}
                     </div>
                 </td>
 
-                <td class="amount ${
+                <td data-label="AMOUNT" class="amount ${
                     LedgerUtils.isInflow(transaction.type)
                         ? "positive"
                         : "negative"
@@ -2352,15 +2352,15 @@ class LedgerView {
 
                 </td>
 
-                <td>
+                <td data-label="PAYMENT">
                     ${this.paymentBadge(transaction)}
                 </td>
 
-                <td>
+                <td data-label="STATUS">
                     ${LedgerUtils.badge(transaction.status)}
                 </td>
 
-                <td>
+                <td data-label="ACTION">
                     <button
                         class="btn ghost small"
                         data-review="${LedgerUtils.escape(transaction.id)}"
@@ -2423,7 +2423,7 @@ class LedgerView {
 
                 <div class="table-wrap">
 
-                    <table>
+                    <table class="responsive-table">
 
                         <thead>
                             <tr>
@@ -3086,7 +3086,7 @@ class LedgerView {
                         <strong>${LedgerUtils.peso(total)}</strong>
                     </div>
                     <div class="table-wrap">
-                        <table>
+                        <table class="responsive-table">
                             <thead>
                                 <tr>
                                     <th>DATE</th>
@@ -3102,11 +3102,11 @@ class LedgerView {
                                     rows.length
                                         ? rows.map(item => `
                                             <tr>
-                                                <td>${LedgerUtils.escape(item.transaction.date)}</td>
-                                                <td>${LedgerUtils.escape(item.party || "—")}</td>
-                                                <td>${LedgerUtils.escape(item.transaction.description)}</td>
-                                                <td class="amount">${LedgerUtils.peso(item.transaction.amount)}</td>
-                                                <td class="amount">${LedgerUtils.peso(item.balance)}</td>
+                                                <td data-label="DATE">${LedgerUtils.escape(item.transaction.date)}</td>
+                                                <td data-label="${who}">${LedgerUtils.escape(item.party || "—")}</td>
+                                                <td data-label="DESCRIPTION">${LedgerUtils.escape(item.transaction.description)}</td>
+                                                <td data-label="TOTAL" class="amount">${LedgerUtils.peso(item.transaction.amount)}</td>
+                                                <td data-label="STILL UNPAID" class="amount">${LedgerUtils.peso(item.balance)}</td>
                                                 <td>
                                                     <button class="btn secondary small"
                                                         data-pay="${LedgerUtils.escape(item.transaction.id)}">
@@ -6216,6 +6216,29 @@ ${errors.length > 10
 
             });
 
+
+        // Tapping outside the drawer, or pressing Escape, closes it
+        document.getElementById("sidebarScrim")
+            ?.addEventListener("click", () => {
+                document.getElementById("sidebar").classList.remove("open");
+            });
+
+        document.addEventListener("keydown", event => {
+
+            if (event.key !== "Escape") return;
+
+            document.getElementById("sidebar")?.classList.remove("open");
+
+            // The add-transaction dialog may be closed with Escape.
+            // The clear-all dialog is deliberately not: it needs a clear choice.
+            // (not while an amount is being typed, so nothing is lost by accident)
+            if (
+                !document.getElementById("modalBackdrop")?.hidden &&
+                !document.getElementById("txAmount")?.value
+            ) {
+                this.closeModal();
+            }
+        });
 
         // Mobile menu
         document.getElementById("mobileMenu")
