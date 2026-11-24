@@ -24,7 +24,6 @@
 
   <link rel="stylesheet" href="css/journal-entries.css">
 
-  <link rel="stylesheet" href="css/chart-of-accounts.css">
   <style>
     .brand-logo { display: block; width: 100%; max-width: 168px; height: auto; }
     .auth-brand .brand-logo { max-width: 230px; margin: 0 auto; }
@@ -40,7 +39,20 @@
     .nav-group.open .nav-chevron { transform: rotate(90deg); }
     .nav-group-items { display: none; }
     .nav-group.open .nav-group-items { display: block; }
-  </style>
+  
+    .tx-type-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 6px 0 16px; }
+    .tx-type-card { display: block; border: 1.5px solid var(--line); border-radius: 10px; padding: 10px 12px; cursor: pointer; }
+    .tx-type-card input { position: absolute; opacity: 0; pointer-events: none; }
+    .tx-type-card.selected { border-color: var(--blue); background: var(--blue-soft); }
+    .tx-type-title { display: block; font-weight: 600; color: var(--ink); }
+    .tx-type-desc { display: block; font-size: .8rem; color: var(--muted); margin-top: 2px; line-height: 1.35; }
+    .review-table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+    .review-table th, .review-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+    .review-table th { color: var(--muted); font-weight: 500; width: 38%; }
+    thead .review-table th, .review-table thead th { width: auto; }
+    @media (max-width: 560px) { .tx-type-cards { grid-template-columns: 1fr; } }
+    [hidden] { display: none !important; }
+</style>
 </head>
 
 <body>
@@ -180,117 +192,48 @@
             <span>Everyday</span><span class="nav-chevron">▸</span>
           </button>
           <div class="nav-group-items">
-        <button
-          class="nav-item"
-          data-page="transactions"
-        >
+
+        <button class="nav-item" data-page="transactions">
           <span class="nav-icon">↔</span>
           Transactions
         </button>
 
-        <button
-          class="nav-item"
-          data-page="receipts"
-        >
+        <button class="nav-item" data-page="outstanding">
+          <span class="nav-icon">◷</span>
+          Unpaid Transactions
+        </button>
+
+        <button class="nav-item" data-page="receipts">
           <span class="nav-icon">▧</span>
           Receipts
         </button>
+
           </div>
         </div>
 
-        <div class="nav-group" data-group="records">
-          <button type="button" class="nav-group-title" data-group-toggle="records" aria-expanded="false">
-            <span>Records</span><span class="nav-chevron">▸</span>
+        <div class="nav-group open" data-group="viewrecords">
+          <button type="button" class="nav-group-title" data-group-toggle="viewrecords" aria-expanded="true">
+            <span>View Records</span><span class="nav-chevron">▸</span>
           </button>
           <div class="nav-group-items">
-        <button
-          class="nav-item"
-          data-page="inventory"
-        >
-          <span class="nav-icon">▣</span>
-          Inventory
+
+        <button class="nav-item" data-page="cashFlow">
+          <span class="nav-icon">⇅</span>
+          Cash Flow
         </button>
 
-        <button
-          class="nav-item"
-          data-page="fixedAssets"
-        >
-          <span class="nav-icon">▨</span>
-          Fixed Assets
-        </button>
-
-        <button
-          class="nav-item"
-          data-page="supplies"
-        >
-          <span class="nav-icon">▩</span>
-          Supplies
-        </button>
-
-        <button
-          class="nav-item"
-          data-page="chartOfAccounts"
-        >
-          <span class="nav-icon">☷</span>
-          Chart of Accounts
-        </button>
-          </div>
-        </div>
-
-        <div class="nav-group" data-group="accounting">
-          <button type="button" class="nav-group-title" data-group-toggle="accounting" aria-expanded="false">
-            <span>Accounting</span><span class="nav-chevron">▸</span>
-          </button>
-          <div class="nav-group-items">
-        <button
-          class="nav-item"
-          data-page="journal"
-        >
+        <button class="nav-item" data-page="journal">
           <span class="nav-icon">▤</span>
           Journal Entries
         </button>
 
-        <button
-          class="nav-item"
-          data-page="ledger"
-        >
+        <button class="nav-item" data-page="ledger">
           <span class="nav-icon">▥</span>
           General Ledger
         </button>
 
-        <button
-          class="nav-item"
-           data-page="trialBalance"
-        >
-          <span class="nav-icon">＝</span>
-          Trial Balance
-        </button>
-
-        <button
-          class="nav-item"
-          data-page="adjustingEntries"
-        >
-          <span class="nav-icon">✎</span>
-          Adjusting Entries
-        </button>
-
-        <button
-          class="nav-item"
-          data-page="adjustedTrialBalance"
-        >
-          <span class="nav-icon">＝</span>
-          Adjusted Trial Balance
-        </button>
           </div>
         </div>
-
-        <button
-          class="nav-item"
-          data-page="financialStatements"
-        >
-          <span class="nav-icon">▦</span>
-          Financial Statements
-        </button>
 
       </nav>
 
@@ -416,6 +359,69 @@
   </div>
 
 
+
+  <!-- ============================= -->
+  <!-- CLEAR ALL TRANSACTIONS DIALOG -->
+  <!-- ============================= -->
+
+  <div class="modal-backdrop" id="clearBackdrop" hidden>
+    <section class="modal" role="alertdialog" aria-modal="true" aria-labelledby="clearTitle">
+
+      <div class="modal-head">
+        <h2 id="clearTitle" style="color:var(--red)">⚠ Clear all transactions</h2>
+        <button class="icon-btn" id="clearClose" type="button" aria-label="Close">×</button>
+      </div>
+
+      <form id="clearForm" autocomplete="off">
+
+        <!-- STEP 1 -->
+        <div id="clearStep1">
+          <div class="info-box" style="border-color:var(--red);background:var(--red-bg);color:var(--red)">
+            <strong>This permanently deletes everything you have recorded.</strong>
+            <ul id="clearList" style="margin:8px 0 0 18px"></ul>
+            <p style="margin-top:8px"><strong>This cannot be undone.</strong></p>
+          </div>
+          <p class="form-note" style="margin-top:12px">
+            Strongly recommended: download a backup first. You can import it again later with Import CSV.
+          </p>
+          <div class="modal-actions">
+            <button type="button" class="btn secondary" id="clearBackup">↓ Download backup (CSV)</button>
+            <button type="button" class="btn secondary" id="clearCancel1">Cancel</button>
+            <button type="button" class="btn danger" id="clearNext">I understand, continue</button>
+          </div>
+        </div>
+
+        <!-- STEP 2 -->
+        <div id="clearStep2" hidden>
+          <div class="form-grid">
+            <label class="span-2">
+              1. Type <strong>DELETE ALL</strong> to confirm
+              <input id="clearPhrase" type="text" placeholder="DELETE ALL">
+            </label>
+            <label class="span-2" id="clearEmailField" hidden>
+              Your email
+              <input id="clearEmail" type="email">
+            </label>
+            <label class="span-2">
+              2. Enter your password
+              <input id="clearPassword" type="password" autocomplete="new-password">
+            </label>
+            <label class="span-2" style="display:flex;gap:8px;align-items:flex-start">
+              <input id="clearAck" type="checkbox" style="width:auto;margin-top:3px">
+              <span>I understand all transactions, payments, journal entries, ledger balances and receipt links will be erased forever.</span>
+            </label>
+          </div>
+          <p class="form-note" id="clearHint"></p>
+          <div class="modal-actions">
+            <button type="button" class="btn secondary" id="clearCancel2">Cancel</button>
+            <button type="submit" class="btn danger" id="clearSubmit" disabled>Delete everything</button>
+          </div>
+        </div>
+
+      </form>
+    </section>
+  </div>
+
   <!-- ============================= -->
   <!-- ADD TRANSACTION MODAL -->
   <!-- ============================= -->
@@ -465,200 +471,112 @@
 
       <form id="transactionForm">
 
-        <div class="form-grid">
+        <!-- STEP 1: DETAILS -->
 
+        <div id="txStepForm">
 
-          <!-- TRANSACTION DATE -->
+          <p class="form-label">1. What kind of transaction is it?</p>
 
-          <label>
-            Transaction date
+          <div id="txTypeCards" class="tx-type-cards"></div>
 
-            <input
-              type="date"
-              id="txDate"
-              required
-            >
+          <div class="form-grid">
 
-          </label>
+            <label>
+              2. Category
+              <select id="txCategory"></select>
+            </label>
 
+            <label>
+              Transaction date
+              <input type="date" id="txDate" required>
+            </label>
 
-          <!-- TRANSACTION TYPE -->
+            <label>
+              Total amount (₱)
+              <input
+                id="txAmount"
+                type="number"
+                min="0.01"
+                step="0.01"
+                placeholder="0.00"
+                required
+              >
+            </label>
 
-          <label>
-            Transaction type
+            <label id="txPartyField">
+              <span id="txPartyLabel">Customer (optional)</span>
+              <input
+                id="txParty"
+                type="text"
+                maxlength="150"
+                placeholder="Name"
+              >
+            </label>
 
-            <select
-              id="txType"
-              required
-            ></select>
-
-          </label>
-
-
-          <!-- DESCRIPTION -->
-
-          <label class="span-2">
-            Description
-
-            <input
-              id="txDescription"
-              type="text"
-              placeholder="e.g. Office supplies purchase"
-              required
-              maxlength="100"
-            >
-
-          </label>
-
-
-          <!-- WHAT THE SELECTED TYPE DOES -->
-
-          <p class="form-note span-2" id="txTypeHelp"></p>
-
-
-          <!-- ITEM, QUANTITY AND UNIT PRICE (Purchase and Sale only) -->
-
-          <div
-            id="inventoryFields"
-            class="span-2"
-            style="display:none"
-          >
-
-            <div class="form-grid" style="padding:0">
-
-              <label>
-                Item
-
-                <input
-                  id="txItem"
-                  type="text"
-                  list="inventoryItemList"
-                  placeholder="Pick an existing item or type a new one"
-                  maxlength="100"
-                  autocomplete="off"
-                >
-
-                <datalist id="inventoryItemList"></datalist>
-
-              </label>
-
-              <label>
-                Quantity
-
-                <input
-                  id="txQuantity"
-                  type="number"
-                  min="0.01"
-                  step="0.01"
-                  placeholder="0"
-                >
-
-              </label>
-
-              <label>
-                <span id="txUnitPriceLabel">Unit price (₱)</span>
-
-                <input
-                  id="txUnitPrice"
-                  type="number"
-                  min="0.01"
-                  step="0.01"
-                  placeholder="0.00"
-                >
-
-              </label>
-
-            </div>
-
-            <p class="form-note" id="txStockHint"></p>
+            <label class="span-2">
+              Description (optional)
+              <input
+                id="txDescription"
+                type="text"
+                maxlength="100"
+                placeholder="e.g. Rent for November"
+              >
+            </label>
 
           </div>
 
+          <div id="txPaymentFields" class="form-grid">
 
-          <!-- CATEGORY -->
+            <label>
+              Payment status
+              <select id="txPayStatus">
+                <option value="paid">Paid in full</option>
+                <option value="unpaid">Not yet paid</option>
+                <option value="partial">Partially paid</option>
+              </select>
+            </label>
 
-          <label id="txCategoryLabel">
-            Category
+            <label id="txPaidField" hidden>
+              How much has been paid? (₱)
+              <input
+                id="txPaidAmount"
+                type="number"
+                min="0.01"
+                step="0.01"
+                placeholder="0.00"
+              >
+            </label>
 
-            <select id="txCategory">
+          </div>
 
-              <option>Office Supplies</option>
-
-              <option>Sales Revenue</option>
-
-              <option>Utilities</option>
-
-              <option>Transportation</option>
-
-              <option>Rent Expense</option>
-
-              <option>Service Revenue</option>
-
-              <option>Other</option>
-
-            </select>
-
-          </label>
-
-
-          <!-- AMOUNT -->
-
-          <label>
-            <span id="txAmountLabel">Amount (₱)</span>
-
-            <input
-              id="txAmount"
-              type="number"
-              min="0.01"
-              step="0.01"
-              placeholder="0.00"
-              required
-            >
-
-          </label>
-
-
-          <!-- RECEIPT ATTACHMENT -->
-
-          <label class="span-2">
-            Attach receipt (optional)
-
-            <input
-              id="txReceipt"
-              type="file"
-              accept="image/*,.pdf"
-            >
-
-          </label>
+          <div class="form-grid">
+            <label class="span-2">
+              Attach receipt (optional)
+              <input id="txReceipt" type="file" accept="image/*,.pdf">
+            </label>
+          </div>
 
         </div>
 
+        <!-- STEP 2: REVIEW -->
 
-        <!-- FORM INFORMATION -->
-
-        <p class="form-note">
-          LARP will prepare a suggested journal entry.
-          You can review and edit it before approval.
-        </p>
-
-
-        <!-- MODAL ACTIONS -->
+        <div id="txStepReview" hidden>
+          <p class="form-label">Review before saving</p>
+          <div id="txReviewBody"></div>
+        </div>
 
         <div class="modal-actions">
 
-          <button
-            type="button"
-            class="btn secondary"
-            id="cancelModal"
-          >
+          <button type="button" class="btn secondary" id="cancelModal">
             Cancel
           </button>
 
-          <button
-            type="submit"
-            class="btn primary"
-          >
-            Save and review
+          <button type="button" class="btn secondary" id="txBack" hidden>
+            ← Back
+          </button>
+
+          <button type="submit" class="btn primary" id="txSubmit">
+            Review →
           </button>
 
         </div>

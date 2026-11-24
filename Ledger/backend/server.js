@@ -40,6 +40,10 @@ const transactionRoutes = require("./routes/transactions");
 app.use("/api/transactions", transactionRoutes);
 
 
+// CASH BOOK: payment status, customer/supplier, later payments
+app.use("/api/cashbook", require("./routes/cashbook"));
+
+
 // JOURNAL ENTRIES
 const journalEntryRoutes = require("./routes/journalEntries");
 app.use("/api/journal-entries", journalEntryRoutes);
