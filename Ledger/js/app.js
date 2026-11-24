@@ -3777,44 +3777,182 @@ class LedgerApp {
 
         const register = mode === "register";
 
-        document.getElementById("authTitle").textContent =
-            register
-                ? "Create your account"
-                : "Welcome back";
+        const $ = id => document.getElementById(id);
 
-        document.getElementById("authSubtitle").textContent =
+        $("authTitle").textContent =
+            register ? "Create your account" : "Welcome back";
+
+        $("authSubtitle").textContent =
             register
-                ? "Create an account to manage your business records."
+                ? "It takes less than a minute. No accounting knowledge needed."
                 : "Sign in to manage your business records.";
 
-        document.getElementById("nameField").hidden =
-            !register;
+        $("nameField").hidden = !register;
+        $("registerExtras").hidden = !register;
+        $("rememberRow").hidden = register;
 
-        document.getElementById("authName").required =
-            register;
+        $("authPassword").autocomplete =
+            register ? "new-password" : "current-password";
 
-        document.getElementById("authPassword").autocomplete =
-            register
-                ? "new-password"
-                : "current-password";
+        $("authPassword").placeholder =
+            register ? "Create a password" : "Enter your password";
 
-        document.getElementById("authSubmit").textContent =
-            register
-                ? "Create account"
-                : "Sign in";
+        this.setAuthBusy(false);
 
-        document.getElementById("authSwitchText").textContent =
-            register
-                ? "Already have an account?"
-                : "Don't have an account?";
+        $("authSwitchText").textContent =
+            register ? "Already have an account?" : "Don't have an account?";
 
-        document.getElementById("authSwitch").textContent =
-            register
-                ? "Sign in"
-                : "Create account";
+        $("authSwitch").textContent =
+            register ? "Sign in" : "Create account";
 
-        document.getElementById("authMessage").textContent = "";
+        this.setAuthMessage("");
+
+        ["authName", "authEmail", "authPassword", "authConfirm"].forEach(
+            id => this.setAuthFieldError(id, "")
+        );
+
+        $("authConfirm").value = "";
+
+        this.updatePasswordStrength();
+
+        // Bring back the remembered email when signing in.
+        if (!register && !$("authEmail").value) {
+
+            try {
+
+                const saved = localStorage.getItem("larp-email");
+
+                if (saved) {
+                    $("authEmail").value = saved;
+                    $("authRemember").checked = true;
+                }
+
+            } catch (error) {
+                // Storage can be blocked; signing in still works.
+            }
+        }
     }
+
+    setAuthBusy(busy) {
+
+        const button = document.getElementById("authSubmit");
+
+        const register = this.state.authMode === "register";
+
+        button.disabled = busy;
+
+        button.innerHTML = busy
+            ? `<span class="auth-spinner"></span>${register ? "Creating account…" : "Signing in…"}`
+            : (register ? "Create account" : "Sign in");
+    }
+
+    setAuthMessage(text, kind = "error") {
+
+        const box = document.getElementById("authMessage");
+
+        box.textContent = text;
+        box.className = text ? kind : "";
+    }
+
+    setAuthFieldError(id, message) {
+
+        const note = document.getElementById("err-" + id);
+        const input = document.getElementById(id);
+
+        if (note) note.textContent = message || "";
+
+        if (input) {
+            input.classList.toggle("invalid", Boolean(message));
+            input.setAttribute("aria-invalid", message ? "true" : "false");
+        }
+    }
+
+    // How strong a new password is: 0 (empty) to 3.
+    updatePasswordStrength() {
+
+        const value = document.getElementById("authPassword")?.value || "";
+
+        const rules = {
+            length: value.length >= 8,
+            mix: /[A-Za-z]/.test(value) && /\d/.test(value),
+            long: value.length >= 12 || /[^A-Za-z0-9]/.test(value)
+        };
+
+        document.querySelectorAll("#passwordRules li").forEach(item => {
+            item.classList.toggle("ok", rules[item.dataset.rule]);
+        });
+
+        const score = !value
+            ? 0
+            : (rules.length ? 1 : 0) +
+              (rules.length && rules.mix ? 1 : 0) +
+              (rules.length && rules.mix && rules.long ? 1 : 0);
+
+        const fill = document.getElementById("strengthFill");
+        const label = document.getElementById("strengthLabel");
+
+        if (!fill || !label) return;
+
+        fill.style.width = ["0%", "33%", "66%", "100%"][score];
+
+        fill.style.background =
+            ["transparent", "#dc2626", "#d97706", "#16a34a"][score];
+
+        label.textContent = !value
+            ? "Password strength"
+            : !rules.length
+                ? "Too short — use at least 8 characters"
+                : ["", "Weak", "Okay", "Strong"][score];
+    }
+
+    // Returns true when the form can be sent. Shows what to fix beside each field.
+    validateAuthForm() {
+
+        const register = this.state.authMode === "register";
+
+        const get = id => document.getElementById(id).value;
+
+        let first = null;
+
+        const problem = (id, message) => {
+            this.setAuthFieldError(id, message);
+            first = first || id;
+        };
+
+        ["authName", "authEmail", "authPassword", "authConfirm"].forEach(
+            id => this.setAuthFieldError(id, "")
+        );
+
+        if (register && get("authName").trim().length < 2) {
+            problem("authName", "Please enter your full name.");
+        }
+
+        const email = get("authEmail").trim();
+
+        if (!email) {
+            problem("authEmail", "Please enter your email address.");
+        } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+            problem("authEmail", "That doesn't look like an email address. Example: you@example.com");
+        }
+
+        const password = get("authPassword");
+
+        if (!password) {
+            problem("authPassword", "Please enter your password.");
+        } else if (register && password.length < 8) {
+            problem("authPassword", "Use at least 8 characters.");
+        }
+
+        if (register && password && password.length >= 8 &&
+            get("authConfirm") !== password) {
+            problem("authConfirm", "The passwords don't match. Type the same password again.");
+        }
+
+        if (first) document.getElementById(first).focus();
+
+        return !first;
+    }
+
 
 
     // -----------------------------------------------------
@@ -3825,68 +3963,30 @@ class LedgerApp {
 
         event.preventDefault();
 
-        const message =
-            document.getElementById("authMessage");
+        if (!this.validateAuthForm()) {
 
-        const button =
-            document.getElementById("authSubmit");
-
-        const email =
-            document.getElementById("authEmail")
-                .value.trim();
-
-        const password =
-            document.getElementById("authPassword")
-                .value;
-
-        const name =
-            document.getElementById("authName")
-                .value.trim();
-
-
-        if (
-            this.state.authMode === "register" &&
-            !name
-        ) {
-
-            message.textContent =
-                "Please enter your full name.";
+            this.setAuthMessage("");
 
             return;
         }
 
+        const email = document.getElementById("authEmail").value.trim();
 
-        if (password.length < 8) {
+        const password = document.getElementById("authPassword").value;
 
-            message.textContent =
-                "Password must contain at least 8 characters.";
+        const name = document.getElementById("authName").value.trim();
 
-            return;
-        }
+        const mode = this.state.authMode;
 
+        this.setAuthBusy(true);
 
-        button.disabled = true;
-
-        message.textContent = "Please wait...";
-
+        this.setAuthMessage("Please wait…", "info");
 
         try {
 
-            const mode = this.state.authMode;
-
             const data = mode === "register"
-
-                ? await this.api.register(
-                    name,
-                    email,
-                    password
-                )
-
-                : await this.api.login(
-                    email,
-                    password
-                );
-
+                ? await this.api.register(name, email, password)
+                : await this.api.login(email, password);
 
             if (!data.token || !data.user) {
 
@@ -3895,25 +3995,34 @@ class LedgerApp {
                 );
             }
 
-
-            sessionStorage.setItem(
-                LedgerUtils.TOKEN_KEY,
-                data.token
-            );
+            sessionStorage.setItem(LedgerUtils.TOKEN_KEY, data.token);
 
             sessionStorage.setItem(
                 LedgerUtils.USER_KEY,
                 JSON.stringify(data.user)
             );
 
+            // Remember (or forget) the email, only if asked.
+            try {
+
+                if (mode === "login" &&
+                    document.getElementById("authRemember").checked) {
+                    localStorage.setItem("larp-email", email);
+                } else if (mode === "login") {
+                    localStorage.removeItem("larp-email");
+                }
+
+            } catch (error) {
+                // Storage can be blocked; that is fine.
+            }
 
             this.state.currentUser = data.user;
 
             document.getElementById("authForm").reset();
 
+            this.setAuthMessage("");
 
             await this.start();
-
 
             LedgerUtils.toast(
                 mode === "register"
@@ -3923,13 +4032,28 @@ class LedgerApp {
 
         } catch (error) {
 
-            message.textContent = error.message;
+            const offline =
+                /failed to fetch|networkerror|load failed|network request/i
+                    .test(error.message || "");
+
+            this.setAuthMessage(
+                offline
+                    ? "Can't reach the server. Check your internet connection and try again. " +
+                      "If you are using the free hosting, it may need up to a minute to wake up."
+                    : (error.message || "Something went wrong. Please try again.")
+            );
+
+            // Keep what was typed; only the password is cleared on a failed sign-in.
+            if (mode === "login" && !offline) {
+                document.getElementById("authPassword").select();
+            }
 
         } finally {
 
-            button.disabled = false;
+            this.setAuthBusy(false);
         }
     }
+
 
 
     logout(showMessage = true) {
@@ -6051,6 +6175,67 @@ ${errors.length > 10
 
             });
 
+
+        // Sign in / create account niceties
+        const toggle = document.getElementById("authToggle");
+
+        toggle?.addEventListener("click", () => {
+
+            const input = document.getElementById("authPassword");
+
+            const show = input.type === "password";
+
+            [input, document.getElementById("authConfirm")].forEach(field => {
+                if (field) field.type = show ? "text" : "password";
+            });
+
+            toggle.textContent = show ? "Hide" : "Show";
+            toggle.setAttribute("aria-pressed", String(show));
+            toggle.setAttribute("aria-label", show ? "Hide password" : "Show password");
+        });
+
+        const caps = event => {
+            const warning = document.getElementById("capsWarning");
+            if (warning && event.getModifierState) {
+                warning.hidden = !event.getModifierState("CapsLock");
+            }
+        };
+
+        ["keydown", "keyup"].forEach(type => {
+            document.getElementById("authPassword")
+                ?.addEventListener(type, caps);
+        });
+
+        document.getElementById("authPassword")
+            ?.addEventListener("blur", () => {
+                const warning = document.getElementById("capsWarning");
+                if (warning) warning.hidden = true;
+            });
+
+        document.getElementById("authPassword")
+            ?.addEventListener("input", () => {
+                this.updatePasswordStrength();
+                this.setAuthFieldError("authPassword", "");
+            });
+
+        ["authName", "authEmail", "authConfirm"].forEach(id => {
+            document.getElementById(id)
+                ?.addEventListener("input", () => {
+                    this.setAuthFieldError(id, "");
+                    this.setAuthMessage("");
+                });
+        });
+
+        // Tell the person as soon as the confirmation differs
+        document.getElementById("authConfirm")
+            ?.addEventListener("blur", () => {
+                const confirm = document.getElementById("authConfirm").value;
+                const password = document.getElementById("authPassword").value;
+                if (confirm && confirm !== password) {
+                    this.setAuthFieldError("authConfirm",
+                        "The passwords don't match. Type the same password again.");
+                }
+            });
 
         // Logout
         document.getElementById("logoutButton")

@@ -4,7 +4,6 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#17234A">
-  <meta name="theme-color" content="#172554">
 
   <title>LARP — Lucid Accounting Record Program</title>
   <link rel="icon" type="image/png" href="images/larp-favicon.png">
@@ -60,6 +59,7 @@
     .warn-box ul { margin: 4px 0 0 18px; }
     .review-table input { width: 100%; padding: 4px 6px; }
 </style>
+  <link rel="stylesheet" href="css/auth.css">
   <link rel="stylesheet" href="css/responsive.css">
 </head>
 
@@ -71,87 +71,129 @@
 
   <div id="authScreen" class="auth-screen">
 
-    <div class="auth-card">
+    <!-- WHAT LARP IS (hidden on small screens) -->
+    <aside class="auth-hero" aria-hidden="false">
 
-      <div class="brand auth-brand">
-        <img class="brand-logo" src="images/larp-logo.png"
+      <img class="brand-logo" src="images/larp-logo.png"
+           alt="LARP — Lucid Accounting Record Program">
+
+      <h2>Bookkeeping that explains itself.</h2>
+
+      <p>
+        Record what your business earns and spends in a few simple steps.
+        LARP prepares the accounting entries for you to check.
+      </p>
+
+      <ul class="auth-points">
+        <li>
+          <span class="dot">1</span>
+          <div><strong>Record in four simple choices</strong>
+            <span class="txt">Money received, purchase, business expense, or owner money.</span></div>
+        </li>
+        <li>
+          <span class="dot">2</span>
+          <div><strong>See who owes you, and who you owe</strong>
+            <span class="txt">Track unpaid and partly paid transactions until they are settled.</span></div>
+        </li>
+        <li>
+          <span class="dot">3</span>
+          <div><strong>Keep your receipts with your records</strong>
+            <span class="txt">Attach receipts and review the journal and ledger anytime.</span></div>
+        </li>
+      </ul>
+
+    </aside>
+
+    <!-- THE FORM -->
+    <main class="auth-panel">
+
+      <div class="auth-card">
+
+        <img class="brand-logo auth-logo-mobile" src="images/larp-logo.png"
              alt="LARP — Lucid Accounting Record Program">
+
+        <h1 id="authTitle">Welcome back</h1>
+
+        <p class="auth-sub" id="authSubtitle">
+          Sign in to manage your business records.
+        </p>
+
+        <form id="authForm" novalidate>
+
+          <div id="nameField" hidden>
+            <label>
+              Full name
+              <input id="authName" type="text" placeholder="Your full name"
+                     autocomplete="name" aria-describedby="err-authName">
+              <span class="auth-field-error" id="err-authName"></span>
+            </label>
+          </div>
+
+          <label>
+            Email address
+            <input id="authEmail" type="email" placeholder="you@example.com"
+                   autocomplete="email" inputmode="email" autocapitalize="off"
+                   spellcheck="false" aria-describedby="err-authEmail">
+            <span class="auth-field-error" id="err-authEmail"></span>
+          </label>
+
+          <label>
+            Password
+            <span class="password-wrap">
+              <input id="authPassword" type="password" placeholder="Enter your password"
+                     autocomplete="current-password" aria-describedby="err-authPassword">
+              <button type="button" class="password-toggle" id="authToggle"
+                      aria-label="Show password" aria-pressed="false">Show</button>
+            </span>
+            <span class="caps-warning" id="capsWarning" hidden>⚠ Caps Lock is on</span>
+            <span class="auth-field-error" id="err-authPassword"></span>
+          </label>
+
+          <!-- Create account only -->
+          <div id="registerExtras" hidden>
+
+            <div class="strength" id="strength">
+              <div class="strength-bar"><i id="strengthFill"></i></div>
+              <span class="strength-label" id="strengthLabel">Password strength</span>
+              <ul class="rules" id="passwordRules">
+                <li data-rule="length">At least 8 characters</li>
+                <li data-rule="mix">Letters and numbers</li>
+                <li data-rule="long">12 or more characters, or a symbol (stronger)</li>
+              </ul>
+            </div>
+
+            <label style="margin-top:14px">
+              Confirm password
+              <input id="authConfirm" type="password" placeholder="Type the password again"
+                     autocomplete="new-password" aria-describedby="err-authConfirm">
+              <span class="auth-field-error" id="err-authConfirm"></span>
+            </label>
+
+          </div>
+
+          <label class="remember" id="rememberRow">
+            <input type="checkbox" id="authRemember">
+            Remember my email on this device
+          </label>
+
+          <button type="submit" class="btn primary" id="authSubmit">
+            Sign in
+          </button>
+
+        </form>
+
+        <p id="authMessage" role="alert" aria-live="polite"></p>
+
+        <p class="auth-switch">
+          <span id="authSwitchText">Don't have an account?</span>
+          <button type="button" id="authSwitch">Create account</button>
+        </p>
+
+        <p class="auth-foot">Your records are saved to your own account.</p>
+
       </div>
 
-      <h1 id="authTitle">Welcome back</h1>
-
-      <p id="authSubtitle">
-        Sign in to manage your business records.
-      </p>
-
-      <form id="authForm">
-
-        <div id="nameField" hidden>
-          <label>
-            Full name
-
-            <input
-              id="authName"
-              type="text"
-              placeholder="Your full name"
-              autocomplete="name"
-            >
-          </label>
-        </div>
-
-        <label>
-          Email address
-
-          <input
-            id="authEmail"
-            type="email"
-            placeholder="you@example.com"
-            autocomplete="email"
-            required
-          >
-        </label>
-
-        <label>
-          Password
-
-          <input
-            id="authPassword"
-            type="password"
-            placeholder="Enter your password"
-            autocomplete="current-password"
-            minlength="8"
-            required
-          >
-        </label>
-
-        <button
-          type="submit"
-          class="btn primary"
-          id="authSubmit"
-        >
-          Sign in
-        </button>
-
-      </form>
-
-      <p id="authMessage" role="alert"></p>
-
-      <p class="auth-switch">
-
-        <span id="authSwitchText">
-          Don't have an account?
-        </span>
-
-        <button
-          type="button"
-          id="authSwitch"
-        >
-          Create account
-        </button>
-
-      </p>
-
-    </div>
+    </main>
 
   </div>
 
